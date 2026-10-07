@@ -20,4 +20,37 @@ void main() {
     expect(profile('Ana').initials, 'A');
     expect(profile('   ').initials, 'U');
   });
+
+  test('ProfileUpdate.toRow limpia campos opcionales vacíos', () {
+    const ProfileUpdate update = ProfileUpdate(
+      fullName: '  Ana Pérez ',
+      colony: 'Santa Fe',
+      phone: '   ',
+      bio: ' Me gusta reforestar ',
+      notifications: NotificationPreferences(campaigns: false),
+    );
+
+    expect(update.toRow('u1'), <String, dynamic>{
+      'id': 'u1',
+      'full_name': 'Ana Pérez',
+      'colony': 'Santa Fe',
+      'phone': null,
+      'bio': 'Me gusta reforestar',
+      'notify_reports': true,
+      'notify_campaigns': false,
+      'notify_tips': true,
+    });
+  });
+
+  test('NotificationPreferences compara por valor', () {
+    expect(
+      const NotificationPreferences(),
+      const NotificationPreferences().copyWith(tips: true),
+    );
+    expect(
+      const NotificationPreferences() ==
+          const NotificationPreferences().copyWith(tips: false),
+      isFalse,
+    );
+  });
 }

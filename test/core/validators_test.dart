@@ -74,4 +74,38 @@ void main() {
       expect(Validators.otpCode(' 12345678 '), isNull);
     });
   });
+
+  group('Validators.optionalPhone', () {
+    test('es opcional', () {
+      expect(Validators.optionalPhone(null), isNull);
+      expect(Validators.optionalPhone('  '), isNull);
+    });
+
+    test('acepta 10 dígitos con espacios, guiones o +52', () {
+      expect(Validators.optionalPhone('55 1234 5678'), isNull);
+      expect(Validators.optionalPhone('55-1234-5678'), isNull);
+      expect(Validators.optionalPhone('+52 55 1234 5678'), isNull);
+    });
+
+    test('rechaza longitudes o letras inválidas', () {
+      expect(Validators.optionalPhone('5512345'), isNotNull);
+      expect(Validators.optionalPhone('55123456789'), isNotNull);
+      expect(Validators.optionalPhone('55 1234 abcd'), isNotNull);
+    });
+  });
+
+  test('Validators.bio limita a 160 caracteres', () {
+    expect(Validators.bio('a' * 160), isNull);
+    expect(Validators.bio('a' * 161), 'Máximo 160 caracteres');
+    expect(Validators.bio(null), isNull);
+  });
+
+  test('Validators.newEmail rechaza el mismo correo', () {
+    expect(
+      Validators.newEmail('ANA@correo.mx ', 'ana@correo.mx'),
+      'Es el mismo correo que ya usas',
+    );
+    expect(Validators.newEmail('otra@correo.mx', 'ana@correo.mx'), isNull);
+    expect(Validators.newEmail('otra@', 'ana@correo.mx'), isNotNull);
+  });
 }

@@ -17,7 +17,9 @@ datos y almacenamiento de fotos).
 | Reciclaje | Centros desde Supabase sobre un mapa de OpenStreetMap, distancia desde tu ubicación, búsqueda, filtros, ruta en Google Maps y llamada. |
 | Aprender | Guía de separación de residuos y cuidado del agua. |
 | Campañas | Jornadas ecológicas con inscripción y conteo de participantes. |
-| Perfil | Datos del usuario, edición de nombre y colonia, accesos a reportes y campañas. |
+| Perfil | Datos del usuario y accesos a reportes, campañas y notificaciones. |
+| Editar perfil | Foto (cámara o galería), nombre, teléfono, colonia, "Sobre mí", preferencias de notificaciones, cambio de correo y contraseña, y eliminación de la cuenta. Avisa antes de salir sin guardar. |
+| Notificaciones | Avisos de cambio de estado de reportes, campañas nuevas, recordatorios y consejos. Contador en la campana de Inicio en tiempo real, filtros de no leídas, marcar todo leído y deslizar para borrar. |
 
 ## Estructura
 
@@ -32,7 +34,8 @@ lib/
     reports/                Modelo, repositorio y pantallas de reportes
     recycling/              Modelo, filtros y pantalla de centros
     campaigns/              Modelo, repositorio y pantalla de campañas
-    profile/                Repositorio y pantalla de perfil
+    profile/                Repositorio, perfil y edición de perfil
+    notifications/          Modelo, repositorio y centro de notificaciones
     learning/               Guía de reciclaje
 supabase/schema.sql         Tablas, permisos (RLS), triggers y datos de ejemplo
 test/                       Pruebas unitarias y de widgets
@@ -53,6 +56,13 @@ versiones falsas sin red.
 4. Carga tus centros de reciclaje en `recycling_centers`,
    `recycling_materials` y `recycling_center_materials` si aún no lo has
    hecho.
+5. Opcional: para recordatorios de campañas y consejos automáticos, activa
+   la extensión **pg_cron** en **Database → Extensions** y ejecuta las
+   líneas `cron.schedule` que están comentadas al final de `schema.sql`.
+
+`schema.sql` crea el bucket `avatars` para las fotos de perfil, la tabla
+`notifications` y los triggers que generan los avisos. Si ya lo habías
+ejecutado antes, vuelve a correrlo completo para agregar estas partes.
 
 La URL y la llave pública de Supabase están en
 `lib/core/config/supabase_config.dart`. Puedes usar otro proyecto sin

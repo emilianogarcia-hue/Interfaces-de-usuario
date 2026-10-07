@@ -1,5 +1,11 @@
 import 'package:ecocuajimalpa/features/campaigns/data/campaign.dart';
 import 'package:ecocuajimalpa/features/campaigns/data/campaigns_repository.dart';
+import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:ecocuajimalpa/features/notifications/data/app_notification.dart';
+import 'package:ecocuajimalpa/features/notifications/data/notifications_repository.dart';
+import 'package:ecocuajimalpa/features/profile/data/profile_repository.dart';
 import 'package:ecocuajimalpa/features/reports/data/report.dart';
 import 'package:ecocuajimalpa/features/reports/data/reports_repository.dart';
 import 'package:flutter/material.dart';
@@ -69,4 +75,70 @@ class FakeCampaignsRepository implements CampaignsRepository {
 
   @override
   Future<void> leave(int campaignId) async => left.add(campaignId);
+}
+
+class FakeProfileRepository implements ProfileRepository {
+  FakeProfileRepository(this.profile);
+
+  UserProfile profile;
+  final List<ProfileUpdate> updates = <ProfileUpdate>[];
+  final List<String> emails = <String>[];
+  final List<String> passwords = <String>[];
+  int avatarUploads = 0;
+  int avatarRemovals = 0;
+  bool deleted = false;
+  bool signedOut = false;
+
+  @override
+  Future<UserProfile> load() async => profile;
+
+  @override
+  Future<void> update(ProfileUpdate update) async => updates.add(update);
+
+  @override
+  Future<String> uploadAvatar(Uint8List bytes, String extension) async {
+    avatarUploads++;
+    return 'https://example.com/avatar.$extension';
+  }
+
+  @override
+  Future<void> removeAvatar() async => avatarRemovals++;
+
+  @override
+  Future<void> changeEmail(String newEmail) async => emails.add(newEmail);
+
+  @override
+  Future<void> changePassword(String newPassword) async =>
+      passwords.add(newPassword);
+
+  @override
+  Future<void> deleteAccount() async => deleted = true;
+
+  @override
+  Future<void> signOut() async => signedOut = true;
+}
+
+class FakeNotificationsRepository implements NotificationsRepository {
+  FakeNotificationsRepository(this.items);
+
+  List<AppNotification> items;
+  final List<int> read = <int>[];
+  final List<int> deleted = <int>[];
+  int markAllCalls = 0;
+  final StreamController<int> _unread = StreamController<int>.broadcast();
+
+  @override
+  Future<List<AppNotification>> list() async => items;
+
+  @override
+  Stream<int> unreadCount() => _unread.stream;
+
+  @override
+  Future<void> markRead(int id) async => read.add(id);
+
+  @override
+  Future<void> markAllRead() async => markAllCalls++;
+
+  @override
+  Future<void> delete(int id) async => deleted.add(id);
 }

@@ -645,11 +645,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   Widget _buildAccountCard() {
     final String? pending = widget.profile.pendingEmail;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
+    return Material(
+      color: Colors.white,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
+        side: const BorderSide(color: AppColors.border),
       ),
       child: Column(
         children: [
