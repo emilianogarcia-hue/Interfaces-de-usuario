@@ -1,0 +1,366 @@
+// Casos de la matriz que hablan con Supabase, con el servidor simulado
+// (las respuestas imitan las de Supabase). No es parte del repo.
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:ecocuajimalpa/features/auth/presentation/forgot_password_screen.dart';
+import 'package:ecocuajimalpa/features/auth/presentation/register_screen.dart';
+import 'package:ecocuajimalpa/features/recycling/presentation/recycling_centers_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator_platform_interface/geolocator_platform_interface.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:plugin_platform_interface/plugin_platform_interface.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher_platform_interface/link.dart';
+import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
+
+import 'shots_test.dart' show loadFonts, open, shot, theme, phone;
+
+final List<http.Request> requests = <http.Request>[];
+http.Response Function(http.Request request) server = (_) =>
+    http.Response('{}', 200);
+
+http.Response json(Object body, [int status = 200]) => http.Response(
+  jsonEncode(body),
+  status,
+  headers: <String, String>{'content-type': 'application/json; charset=utf-8'},
+);
+
+Map<String, dynamic> user(String email) => <String, dynamic>{
+  'id': '6f1c2b1e-0000-4000-8000-000000000001',
+  'aud': 'authenticated',
+  'role': 'authenticated',
+  'email': email,
+  'app_metadata': <String, dynamic>{},
+  'user_metadata': <String, dynamic>{},
+  'created_at': '2026-10-01T00:00:00Z',
+};
+
+const List<Map<String, dynamic>> centers = <Map<String, dynamic>>[
+  <String, dynamic>{
+    'id': 1,
+    'slug': 'punto-limpio-contadero',
+    'name': 'Punto Limpio Contadero',
+    'address': 'Av. Contadero 120',
+    'colony': 'Contadero',
+    'latitude': 19.3609,
+    'longitude': -99.2851,
+    'phone': '55 1234 5678',
+    'opening_hours': 'Lun-Sáb 08:00-18:00',
+    'open_now': true,
+    'rating': 4.6,
+    'recycling_center_materials': <dynamic>[
+      <String, dynamic>{
+        'recycling_materials': <String, dynamic>{'name': 'Plástico'},
+      },
+      <String, dynamic>{
+        'recycling_materials': <String, dynamic>{'name': 'Vidrio'},
+      },
+    ],
+  },
+  <String, dynamic>{
+    'id': 2,
+    'slug': 'centro-acopio-santa-fe',
+    'name': 'Centro de Acopio Santa Fe',
+    'address': 'Vasco de Quiroga 3800',
+    'colony': 'Santa Fe',
+    'latitude': 19.3590,
+    'longitude': -99.2600,
+    'phone': '55 8765 4321',
+    'opening_hours': 'Lun-Vie 09:00-17:00',
+    'open_now': false,
+    'rating': 4.2,
+    'recycling_center_materials': <dynamic>[
+      <String, dynamic>{
+        'recycling_materials': <String, dynamic>{'name': 'Cartón'},
+      },
+    ],
+  },
+];
+
+class FakeGeolocator extends GeolocatorPlatform with MockPlatformInterfaceMixin {
+  @override
+  Future<bool> isLocationServiceEnabled() async => true;
+
+  @override
+  Future<LocationPermission> checkPermission() async =>
+      LocationPermission.whileInUse;
+
+  @override
+  Future<LocationPermission> requestPermission() async =>
+      LocationPermission.whileInUse;
+
+  @override
+  Future<Position> getCurrentPosition({
+    LocationSettings? locationSettings,
+  }) async => Position(
+    latitude: 19.3653,
+    longitude: -99.2900,
+    timestamp: DateTime(2026, 10, 7),
+    accuracy: 5,
+    altitude: 0,
+    altitudeAccuracy: 0,
+    heading: 0,
+    headingAccuracy: 0,
+    speed: 0,
+    speedAccuracy: 0,
+  );
+}
+
+class FakeLauncher extends UrlLauncherPlatform with MockPlatformInterfaceMixin {
+  final List<String> opened = <String>[];
+
+  @override
+  LinkDelegate? get linkDelegate => null;
+
+  @override
+  @override
+  Future<bool> canLaunch(String url) async => true;
+
+  @override
+  Future<bool> launchUrl(String url, LaunchOptions options) async {
+    opened.add(url);
+    return true;
+  }
+}
+
+/// Deja que terminen las llamadas simuladas a Supabase.
+Future<void> network(WidgetTester tester) async {
+  for (int i = 0; i < 20; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  await tester.pumpAndSettle();
+}
+
+void main() {
+  setUpAll(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('plugins.flutter.io/path_provider'),
+          (call) async => Directory.systemTemp.createTempSync('eco').path,
+        );
+    await loadFonts();
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await Supabase.initialize(
+      url: 'https://prueba.supabase.co',
+      anonKey: 'anon-key-de-prueba',
+      httpClient: MockClient((request) async {
+        requests.add(request);
+        final http.Response response = server(request);
+        return http.Response.bytes(
+          response.bodyBytes,
+          response.statusCode,
+          headers: response.headers,
+          request: request,
+        );
+      }),
+      authOptions: const FlutterAuthClientOptions(
+        detectSessionInUri: false,
+        autoRefreshToken: false,
+        localStorage: EmptyLocalStorage(),
+      ),
+    );
+  });
+
+  setUp(requests.clear);
+
+  testWidgets('CP-AUT-005', (tester) async {
+    server = (request) {
+      if (request.url.path.endsWith('/auth/v1/signup')) {
+        return json(<String, dynamic>{
+          'code': 422,
+          'error_code': 'user_already_exists',
+          'msg': 'User already registered',
+        }, 422);
+      }
+      return json(<String, dynamic>{});
+    };
+
+    await open(tester, const RegisterScreen(), height: 2800);
+    final Finder fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(0), 'Ana Pérez');
+    await tester.enterText(fields.at(1), 'ana@correo.mx');
+    await tester.enterText(fields.at(2), 'claveSegura1');
+    await tester.enterText(fields.at(3), 'claveSegura1');
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Santa Fe').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Checkbox));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Crear cuenta'));
+    await network(tester);
+
+    expect(
+      requests.where((r) => r.url.path.endsWith('/signup')),
+      hasLength(1),
+    );
+    expect(find.text('Ya existe una cuenta con este correo.'), findsOneWidget);
+    expect(find.byType(RegisterScreen), findsOneWidget);
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    await shot('CP-AUT-005');
+  });
+
+  testWidgets('CP-AUT-007', (tester) async {
+    String? sentCode;
+    server = (request) {
+      final String path = request.url.path;
+      if (path.endsWith('/auth/v1/recover')) {
+        return json(<String, dynamic>{});
+      }
+      if (path.endsWith('/auth/v1/verify')) {
+        sentCode = (jsonDecode(request.body) as Map<String, dynamic>)['token']
+            as String?;
+        if (sentCode != '123456') {
+          return json(<String, dynamic>{
+            'code': 403,
+            'error_code': 'otp_expired',
+            'msg': 'Token has expired or is invalid',
+          }, 403);
+        }
+        return json(<String, dynamic>{
+          'access_token': 'token-de-prueba',
+          'token_type': 'bearer',
+          'expires_in': 3600,
+          'expires_at': 4102444800,
+          'refresh_token': 'refresh-de-prueba',
+          'user': user('ana@correo.mx'),
+        });
+      }
+      if (path.endsWith('/auth/v1/user')) {
+        return json(user('ana@correo.mx'));
+      }
+      return json(<String, dynamic>{});
+    };
+
+    phone(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: TextButton(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (context) =>
+                        const ForgotPasswordScreen(initialEmail: 'ana@correo.mx'),
+                  ),
+                ),
+                child: const Text('App de EcoCuajimalpa (inicio)'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('App de EcoCuajimalpa (inicio)'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Enviar código'));
+    await network(tester);
+    expect(
+      find.text(
+        'Si el correo está registrado, te enviamos un código de recuperación.',
+      ),
+      findsOneWidget,
+    );
+
+    final Finder fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(1), '999999');
+    await tester.enterText(fields.at(2), 'nuevaClave1');
+    await tester.enterText(fields.at(3), 'nuevaClave1');
+    await tester.tap(find.text('Cambiar contraseña'));
+    await network(tester);
+    expect(
+      find.text('El código no es válido o ya expiró. Solicita uno nuevo.'),
+      findsOneWidget,
+    );
+
+    await tester.enterText(fields.at(1), '123456');
+    await tester.tap(find.text('Cambiar contraseña'));
+    await network(tester);
+
+    expect(sentCode, '123456');
+    expect(
+      requests.where(
+        (r) => r.method == 'PUT' && r.url.path.endsWith('/auth/v1/user'),
+      ),
+      hasLength(1),
+    );
+    expect(
+      find.text('Contraseña actualizada. ¡Bienvenido de nuevo!'),
+      findsOneWidget,
+    );
+    expect(find.byType(ForgotPasswordScreen), findsNothing);
+    await shot('CP-AUT-007');
+  });
+
+  testWidgets('CP-REC-003', (tester) async {
+    GeolocatorPlatform.instance = FakeGeolocator();
+    server = (request) => request.url.path.endsWith('/recycling_centers')
+        ? json(centers)
+        : json(<String, dynamic>{});
+
+    phone(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: const RecyclingCentersScreen(),
+      ),
+    );
+    await network(tester);
+    await tester.tap(find.byTooltip('Usar mi ubicación'));
+    await network(tester);
+
+    expect(find.textContaining('Cerca de ti · 2 encontrados'), findsOneWidget);
+    expect(find.text('0.7 km'), findsOneWidget);
+    expect(find.text('3.2 km'), findsOneWidget);
+    await shot('CP-REC-003');
+  });
+
+  testWidgets('CP-REC-004', (tester) async {
+    GeolocatorPlatform.instance = FakeGeolocator();
+    final FakeLauncher launcher = FakeLauncher();
+    UrlLauncherPlatform.instance = launcher;
+    server = (request) => request.url.path.endsWith('/recycling_centers')
+        ? json(centers)
+        : json(<String, dynamic>{});
+
+    phone(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: const RecyclingCentersScreen(),
+      ),
+    );
+    await network(tester);
+    // El primer centro de la lista ya viene abierto con sus botones.
+    await tester.ensureVisible(find.text('Cómo llegar'));
+    await tester.pumpAndSettle();
+    await shot('CP-REC-004');
+
+    await tester.tap(find.text('Cómo llegar'));
+    await network(tester);
+    await tester.tap(find.text('Llamar'));
+    await network(tester);
+
+    expect(launcher.opened, hasLength(2));
+    expect(launcher.opened[0], contains('google.com/maps/dir'));
+    expect(launcher.opened[0], contains('19.3609'));
+    expect(launcher.opened[1], 'tel:5512345678');
+  });
+}
