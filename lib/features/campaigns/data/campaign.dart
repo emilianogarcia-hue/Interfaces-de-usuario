@@ -14,13 +14,6 @@ class Campaign {
   });
 
   factory Campaign.fromJson(Map<String, dynamic> json, {required bool joined}) {
-    int participants = 0;
-    final dynamic counts = json['campaign_participants'];
-
-    if (counts is List && counts.isNotEmpty && counts.first is Map) {
-      participants = ((counts.first as Map)['count'] as num?)?.toInt() ?? 0;
-    }
-
     return Campaign(
       id: (json['id'] as num).toInt(),
       title: json['title']?.toString() ?? '',
@@ -30,7 +23,8 @@ class Campaign {
       category: json['category']?.toString(),
       startsAt: DateTime.parse(json['starts_at'].toString()).toLocal(),
       endsAt: DateTime.parse(json['ends_at'].toString()).toLocal(),
-      participantsCount: participants,
+      participantsCount:
+          (json['participants_count'] as num?)?.toInt() ?? 0,
       joined: joined,
     );
   }

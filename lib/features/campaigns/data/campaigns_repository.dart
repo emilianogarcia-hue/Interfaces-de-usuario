@@ -23,7 +23,7 @@ class SupabaseCampaignsRepository implements CampaignsRepository {
         .from('campaigns')
         .select(
           'id, title, description, location, colony, category, starts_at, '
-          'ends_at, campaign_participants(count)',
+          'ends_at, participants_count',
         )
         .gte('ends_at', DateTime.now().toUtc().toIso8601String())
         .order('starts_at');
