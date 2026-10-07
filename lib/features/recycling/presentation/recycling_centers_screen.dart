@@ -1,28 +1,29 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/services/location_service.dart';
 import '../../../core/theme/app_colors.dart';
-import '../../learning/presentation/learn_screen.dart';
-import '../../reports/presentation/report_screen.dart';
+import '../data/recycling_center.dart';
 
 class RecyclingCentersScreen extends StatefulWidget {
   const RecyclingCentersScreen({super.key});
 
   @override
-  State<RecyclingCentersScreen> createState() =>
-      _RecyclingCentersScreenState();
+  State<RecyclingCentersScreen> createState() => _RecyclingCentersScreenState();
 }
 
 class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
   final SupabaseClient _supabase = Supabase.instance.client;
   final TextEditingController _searchController = TextEditingController();
 
-  // Ubicación temporal de referencia para calcular las distancias.
-  // Más adelante se reemplazará por la ubicación real del teléfono.
-  static const double _userLatitude = 19.3553;
-  static const double _userLongitude = -99.2962;
+  final MapController _mapController = MapController();
+
+  // Mientras no haya GPS se mide desde el centro de Cuajimalpa.
+  GeoPoint _userLocation = LocationService.cuajimalpaCenter;
+  bool _usingRealLocation = false;
 
   List<RecyclingCenter> _centers = <RecyclingCenter>[];
 
@@ -31,7 +32,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
 
   bool _openNowOnly = false;
   String _sortBy = 'nearest';
-  double _maxDistance = 10;
+  double _maxDistance = maxDistanceFilterKm;
   Set<String> _selectedMaterials = <String>{};
 
   int? _selectedCenterId;
@@ -40,12 +41,13 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
   @override
   void initState() {
     super.initState();
-    _loadCenters();
+    _loadCenters().then((_) => _locateUser(silent: true));
   }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _mapController.dispose();
     super.dispose();
   }
 
@@ -83,8 +85,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
           .map(
             (dynamic row) => RecyclingCenter.fromJson(
               Map<String, dynamic>.from(row as Map),
-              userLatitude: _userLatitude,
-              userLongitude: _userLongitude,
+              userLocation: _userLocation,
             ),
           )
           .toList();
@@ -122,55 +123,17 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
     }
   }
 
-  List<String> get _availableMaterials {
-    final Set<String> materials = <String>{};
+  List<String> get _availableMaterials =>
+      RecyclingFilters.availableMaterials(_centers);
 
-    for (final RecyclingCenter center in _centers) {
-      materials.addAll(center.materials);
-    }
-
-    final List<String> result = materials.toList()..sort();
-    return result;
-  }
-
-  List<RecyclingCenter> get _filteredCenters {
-    final String query = _searchController.text.trim().toLowerCase();
-
-    final List<RecyclingCenter> result = _centers.where((center) {
-      final bool matchesSearch = query.isEmpty ||
-          center.name.toLowerCase().contains(query) ||
-          center.address.toLowerCase().contains(query) ||
-          center.colony.toLowerCase().contains(query) ||
-          center.materials.any(
-            (material) => material.toLowerCase().contains(query),
-          );
-
-      final bool matchesOpen = !_openNowOnly || center.isOpen;
-      final bool matchesDistance = center.distanceKm <= _maxDistance;
-
-      final bool matchesMaterials = _selectedMaterials.isEmpty ||
-          center.materials.any(_selectedMaterials.contains);
-
-      return matchesSearch &&
-          matchesOpen &&
-          matchesDistance &&
-          matchesMaterials;
-    }).toList();
-
-    switch (_sortBy) {
-      case 'rating':
-        result.sort((a, b) => b.rating.compareTo(a.rating));
-        break;
-      case 'closing':
-        result.sort((a, b) => b.closingHour.compareTo(a.closingHour));
-        break;
-      case 'nearest':
-      default:
-        result.sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
-    }
-
-    return result;
-  }
+  List<RecyclingCenter> get _filteredCenters => RecyclingFilters.apply(
+    _centers,
+    query: _searchController.text,
+    openNowOnly: _openNowOnly,
+    maxDistance: _maxDistance,
+    materials: _selectedMaterials,
+    sortBy: _sortBy,
+  );
 
   int get _activeFilterCount {
     int count = 0;
@@ -181,7 +144,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
 
     count += _selectedMaterials.length;
 
-    if (_maxDistance < 10) {
+    if (_maxDistance < maxDistanceFilterKm) {
       count++;
     }
 
@@ -192,27 +155,62 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
     return count;
   }
 
-  void _openReportScreen() {
-    Navigator.push(
-      context,
-      MaterialPageRoute<void>(
-        builder: (context) => const ReportScreen(),
-      ),
-    );
+  Future<void> _locateUser({bool silent = false}) async {
+    try {
+      final GeoPoint location = await const LocationService()
+          .getCurrentLocation();
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _userLocation = location;
+        _usingRealLocation = true;
+        _centers = _centers
+            .map((center) => center.withDistanceFrom(location))
+            .toList();
+      });
+
+      _mapController.move(LatLng(location.latitude, location.longitude), 13);
+    } on LocationException catch (error) {
+      if (mounted && !silent) {
+        _showMessage(error.message);
+      }
+    } catch (_) {
+      if (mounted && !silent) {
+        _showMessage('No pudimos obtener tu ubicación.');
+      }
+    }
   }
 
-  void _openLearnScreen() {
-    Navigator.push(
-      context,
-      MaterialPageRoute<void>(
-        builder: (context) => const LearnScreen(),
-      ),
+  Future<void> _openDirections(RecyclingCenter center) async {
+    final Uri uri = Uri.https('www.google.com', '/maps/dir/', <String, String>{
+      'api': '1',
+      'destination': '${center.latitude},${center.longitude}',
+    });
+
+    final bool opened = await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
     );
+
+    if (!opened && mounted) {
+      _showMessage('No se pudo abrir el mapa.');
+    }
+  }
+
+  Future<void> _callCenter(RecyclingCenter center) async {
+    final String digits = center.phone!.replaceAll(RegExp(r'[^0-9+]'), '');
+    final bool opened = await launchUrl(Uri(scheme: 'tel', path: digits));
+
+    if (!opened && mounted) {
+      _showMessage('Teléfono: ${center.phone}');
+    }
   }
 
   Future<void> _openFilters() async {
-    final FilterSelection? result =
-        await showModalBottomSheet<FilterSelection>(
+    final FilterSelection? result = await showModalBottomSheet<FilterSelection>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
@@ -230,12 +228,11 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                 final bool matchesOpen = !tempOpenNow || center.isOpen;
                 final bool matchesDistance =
                     center.distanceKm <= tempMaxDistance;
-                final bool matchesMaterials = tempMaterials.isEmpty ||
+                final bool matchesMaterials =
+                    tempMaterials.isEmpty ||
                     center.materials.any(tempMaterials.contains);
 
-                return matchesOpen &&
-                    matchesDistance &&
-                    matchesMaterials;
+                return matchesOpen && matchesDistance && matchesMaterials;
               }).length;
             }
 
@@ -295,8 +292,9 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                               spacing: 9,
                               runSpacing: 9,
                               children: _availableMaterials.map((material) {
-                                final bool selected =
-                                    tempMaterials.contains(material);
+                                final bool selected = tempMaterials.contains(
+                                  material,
+                                );
 
                                 return FilterChip(
                                   label: Text(material),
@@ -334,7 +332,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                                   child: _sectionTitle('Distancia máxima'),
                                 ),
                                 Text(
-                                  '${tempMaxDistance.toStringAsFixed(0)} km',
+                                  _distanceLabel(tempMaxDistance),
                                   style: const TextStyle(
                                     color: AppColors.primaryGreen,
                                     fontWeight: FontWeight.bold,
@@ -345,11 +343,10 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                             Slider(
                               value: tempMaxDistance,
                               min: 1,
-                              max: 10,
+                              max: maxDistanceFilterKm,
                               divisions: 9,
                               activeColor: AppColors.primaryGreen,
-                              label:
-                                  '${tempMaxDistance.toStringAsFixed(0)} km',
+                              label: _distanceLabel(tempMaxDistance),
                               onChanged: (value) {
                                 setModalState(() {
                                   tempMaxDistance = value;
@@ -360,7 +357,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                             _sectionTitle('Disponibilidad'),
                             SwitchListTile.adaptive(
                               value: tempOpenNow,
-                              activeColor: AppColors.primaryGreen,
+                              activeThumbColor: AppColors.primaryGreen,
                               contentPadding: EdgeInsets.zero,
                               title: const Text('Abiertos ahora'),
                               onChanged: (value) {
@@ -421,7 +418,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                                   setModalState(() {
                                     tempOpenNow = false;
                                     tempSortBy = 'nearest';
-                                    tempMaxDistance = 10;
+                                    tempMaxDistance = maxDistanceFilterKm;
                                     tempMaterials.clear();
                                   });
                                 },
@@ -476,6 +473,14 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
     });
   }
 
+  String _distanceLabel(double distance) {
+    if (distance >= maxDistanceFilterKm) {
+      return 'Sin límite';
+    }
+
+    return '${distance.toStringAsFixed(0)} km';
+  }
+
   Widget _sectionTitle(String title) {
     return Text(
       title,
@@ -500,10 +505,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
       borderRadius: BorderRadius.circular(14),
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 12,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
           color: selected ? AppColors.lightGreen : AppColors.background,
           borderRadius: BorderRadius.circular(14),
@@ -535,17 +537,14 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
     setState(() {
       _openNowOnly = false;
       _sortBy = 'nearest';
-      _maxDistance = 10;
+      _maxDistance = maxDistanceFilterKm;
       _selectedMaterials.clear();
     });
   }
 
   void _showMessage(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: AppColors.darkGreen,
-      ),
+      SnackBar(content: Text(message), backgroundColor: AppColors.darkGreen),
     );
   }
 
@@ -562,47 +561,34 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
           child: _isLoading
               ? const _LoadingView()
               : _errorMessage != null
-                  ? _ErrorView(
-                      message: _errorMessage!,
-                      onRetry: _loadCenters,
-                    )
-                  : CustomScrollView(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      slivers: [
-                        SliverToBoxAdapter(
-                          child: _buildTopSection(centers.length),
-                        ),
-                        SliverToBoxAdapter(
-                          child: _buildMap(centers),
-                        ),
-                        SliverPadding(
-                          padding:
-                              const EdgeInsets.fromLTRB(14, 16, 14, 105),
-                          sliver: centers.isEmpty
-                              ? SliverToBoxAdapter(
-                                  child: _buildEmptyState(),
-                                )
-                              : SliverList(
-                                  delegate: SliverChildBuilderDelegate(
-                                    (context, index) {
-                                      final RecyclingCenter center =
-                                          centers[index];
+              ? _ErrorView(message: _errorMessage!, onRetry: _loadCenters)
+              : CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    SliverToBoxAdapter(child: _buildTopSection(centers.length)),
+                    SliverToBoxAdapter(child: _buildMap(centers)),
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(14, 16, 14, 105),
+                      sliver: centers.isEmpty
+                          ? SliverToBoxAdapter(child: _buildEmptyState())
+                          : SliverList(
+                              delegate: SliverChildBuilderDelegate((
+                                context,
+                                index,
+                              ) {
+                                final RecyclingCenter center = centers[index];
 
-                                      return Padding(
-                                        padding:
-                                            const EdgeInsets.only(bottom: 12),
-                                        child: _buildCenterCard(center),
-                                      );
-                                    },
-                                    childCount: centers.length,
-                                  ),
-                                ),
-                        ),
-                      ],
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: _buildCenterCard(center),
+                                );
+                              }, childCount: centers.length),
+                            ),
                     ),
+                  ],
+                ),
         ),
       ),
-      bottomNavigationBar: _buildBottomNavigation(),
     );
   }
 
@@ -614,24 +600,26 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
         children: [
           Row(
             children: [
-              Material(
-                color: AppColors.lightGreen,
-                borderRadius: BorderRadius.circular(14),
-                child: InkWell(
-                  onTap: () => Navigator.pop(context),
+              if (Navigator.canPop(context)) ...[
+                Material(
+                  color: AppColors.lightGreen,
                   borderRadius: BorderRadius.circular(14),
-                  child: const SizedBox(
-                    width: 42,
-                    height: 42,
-                    child: Icon(
-                      Icons.arrow_back_ios_new_rounded,
-                      size: 18,
-                      color: AppColors.darkGreen,
+                  child: InkWell(
+                    onTap: () => Navigator.pop(context),
+                    borderRadius: BorderRadius.circular(14),
+                    child: const SizedBox(
+                      width: 42,
+                      height: 42,
+                      child: Icon(
+                        Icons.arrow_back_ios_new_rounded,
+                        size: 18,
+                        color: AppColors.darkGreen,
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 12),
+                const SizedBox(width: 12),
+              ],
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -646,7 +634,9 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      'Cuajimalpa, CDMX · $resultCount encontrados',
+                      _usingRealLocation
+                          ? 'Cerca de ti · $resultCount encontrados'
+                          : 'Cuajimalpa, CDMX · $resultCount encontrados',
                       style: const TextStyle(
                         color: AppColors.textSecondary,
                         fontSize: 12,
@@ -685,9 +675,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(15),
-                borderSide: const BorderSide(
-                  color: AppColors.primaryGreen,
-                ),
+                borderSide: const BorderSide(color: AppColors.primaryGreen),
               ),
             ),
           ),
@@ -702,9 +690,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                   selectedColor: AppColors.primaryGreen,
                   checkmarkColor: Colors.white,
                   labelStyle: TextStyle(
-                    color: _openNowOnly
-                        ? Colors.white
-                        : AppColors.textPrimary,
+                    color: _openNowOnly ? Colors.white : AppColors.textPrimary,
                   ),
                   onSelected: (value) {
                     setState(() {
@@ -731,10 +717,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                 const SizedBox(width: 8),
                 ActionChip(
                   onPressed: _openFilters,
-                  avatar: const Icon(
-                    Icons.tune_rounded,
-                    size: 18,
-                  ),
+                  avatar: const Icon(Icons.tune_rounded, size: 18),
                   label: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -775,51 +758,72 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
     final RecyclingCenter? selectedCenter = _selectedCenterId == null
         ? null
         : centers.cast<RecyclingCenter?>().firstWhere(
-              (center) => center?.id == _selectedCenterId,
-              orElse: () => null,
-            );
-
-    const List<Alignment> positions = <Alignment>[
-      Alignment(-0.42, -0.43),
-      Alignment(0.15, -0.18),
-      Alignment(-0.18, 0.12),
-      Alignment(0.45, 0.24),
-      Alignment(-0.60, 0.38),
-    ];
+            (center) => center?.id == _selectedCenterId,
+            orElse: () => null,
+          );
 
     return SizedBox(
       height: 215,
       child: Stack(
         children: [
-          const Positioned.fill(
-            child: CustomPaint(
-              painter: _MapBackgroundPainter(),
-            ),
-          ),
-          ...centers.take(5).toList().asMap().entries.map((entry) {
-            final int index = entry.key;
-            final RecyclingCenter center = entry.value;
-            final bool selected = center.id == _selectedCenterId;
-
-            return Align(
-              alignment: positions[index % positions.length],
-              child: GestureDetector(
-                onTap: () {
-                  setState(() {
-                    _selectedCenterId =
-                        selected ? null : center.id;
-                  });
-                },
-                child: _MapMarker(
-                  isSelected: selected,
-                  isOpen: center.isOpen,
-                ),
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: LatLng(
+                _userLocation.latitude,
+                _userLocation.longitude,
               ),
-            );
-          }),
-          const Align(
-            alignment: Alignment(0, 0.28),
-            child: _CurrentLocationMarker(),
+              initialZoom: 13,
+              onTap: (_, _) {
+                if (_selectedCenterId != null) {
+                  setState(() {
+                    _selectedCenterId = null;
+                  });
+                }
+              },
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.ecocuajimalpa',
+              ),
+              MarkerLayer(
+                markers: [
+                  ...centers.map((center) {
+                    final bool selected = center.id == _selectedCenterId;
+
+                    return Marker(
+                      point: LatLng(center.latitude, center.longitude),
+                      width: 46,
+                      height: 46,
+                      child: GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _selectedCenterId = selected ? null : center.id;
+                          });
+                        },
+                        child: Center(
+                          child: _MapMarker(
+                            isSelected: selected,
+                            isOpen: center.isOpen,
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                  if (_usingRealLocation)
+                    Marker(
+                      point: LatLng(
+                        _userLocation.latitude,
+                        _userLocation.longitude,
+                      ),
+                      width: 45,
+                      height: 45,
+                      child: const _CurrentLocationMarker(),
+                    ),
+                ],
+              ),
+            ],
           ),
           if (selectedCenter != null)
             Positioned(
@@ -837,22 +841,35 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
             ),
           Positioned(
             right: 11,
+            bottom: 38,
+            child: Material(
+              color: Colors.white,
+              shape: const CircleBorder(),
+              elevation: 2,
+              child: IconButton(
+                tooltip: 'Usar mi ubicación',
+                onPressed: () => _locateUser(),
+                icon: Icon(
+                  _usingRealLocation
+                      ? Icons.my_location_rounded
+                      : Icons.location_searching_rounded,
+                  color: AppColors.primaryGreen,
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            right: 11,
             bottom: 10,
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 9,
-                vertical: 6,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
               decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: 0.90),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: const Text(
-                '© OpenStreetMap · Cuajimalpa',
-                style: TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 9,
-                ),
+                '© Colaboradores de OpenStreetMap',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 9),
               ),
             ),
           ),
@@ -971,9 +988,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                     return Chip(
                       label: Text(material),
                       backgroundColor: const Color(0xFFF0FFF7),
-                      side: const BorderSide(
-                        color: Color(0xFF7CE8B2),
-                      ),
+                      side: const BorderSide(color: Color(0xFF7CE8B2)),
                       labelStyle: const TextStyle(
                         color: AppColors.primaryGreen,
                         fontSize: 10.5,
@@ -988,9 +1003,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                       flex: 2,
                       child: FilledButton.icon(
                         onPressed: () {
-                          _showMessage(
-                            'Abriendo ruta hacia ${center.name}.',
-                          );
+                          _openDirections(center);
                         },
                         style: FilledButton.styleFrom(
                           backgroundColor: AppColors.primaryGreen,
@@ -1005,9 +1018,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
                         onPressed: center.phone == null
                             ? null
                             : () {
-                                _showMessage(
-                                  'Teléfono: ${center.phone}',
-                                );
+                                _callCenter(center);
                               },
                         icon: const Icon(Icons.phone_outlined),
                         label: const Text('Llamar'),
@@ -1027,14 +1038,10 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
-        color: isOpen
-            ? const Color(0xFFF0FFF7)
-            : const Color(0xFFFFF3F3),
+        color: isOpen ? const Color(0xFFF0FFF7) : const Color(0xFFFFF3F3),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isOpen
-              ? const Color(0xFF7CE8B2)
-              : const Color(0xFFFFB4B4),
+          color: isOpen ? const Color(0xFF7CE8B2) : const Color(0xFFFFB4B4),
         ),
       ),
       child: Text(
@@ -1054,9 +1061,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
       decoration: BoxDecoration(
         color: AppColors.lightGreen,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: const Color(0xFF83E9B5),
-        ),
+        border: Border.all(color: const Color(0xFF83E9B5)),
       ),
       child: Row(
         children: [
@@ -1081,10 +1086,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
 
   Widget _buildEmptyState() {
     return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 24,
-        vertical: 42,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 42),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(19),
@@ -1110,10 +1112,7 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
           const Text(
             'Cambia la búsqueda, la distancia o los materiales.',
             textAlign: TextAlign.center,
-            style: TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 12,
-            ),
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
           ),
           const SizedBox(height: 16),
           OutlinedButton(
@@ -1124,242 +1123,10 @@ class _RecyclingCentersScreenState extends State<RecyclingCentersScreen> {
       ),
     );
   }
-
-  Widget _buildBottomNavigation() {
-    return Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(
-          top: BorderSide(color: AppColors.border),
-        ),
-      ),
-      child: SafeArea(
-        top: false,
-        child: SizedBox(
-          height: 70,
-          child: Row(
-            children: [
-              _navigationItem(
-                icon: Icons.home_outlined,
-                label: 'Inicio',
-                onTap: () => Navigator.pop(context),
-              ),
-              _navigationItem(
-                icon: Icons.recycling_rounded,
-                label: 'Reciclaje',
-                selected: true,
-                onTap: () {},
-              ),
-              _navigationItem(
-                icon: Icons.description_outlined,
-                label: 'Reportar',
-                onTap: _openReportScreen,
-              ),
-              _navigationItem(
-                icon: Icons.menu_book_outlined,
-                label: 'Aprender',
-                onTap: _openLearnScreen,
-              ),
-              _navigationItem(
-                icon: Icons.campaign_outlined,
-                label: 'Campañas',
-                onTap: () => _showMessage('Módulo Campañas pendiente.'),
-              ),
-              _navigationItem(
-                icon: Icons.person_outline_rounded,
-                label: 'Perfil',
-                onTap: () => _showMessage('Módulo Perfil pendiente.'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _navigationItem({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-    bool selected = false,
-  }) {
-    return Expanded(
-      child: InkWell(
-        onTap: onTap,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              icon,
-              color: selected
-                  ? AppColors.primaryGreen
-                  : AppColors.textSecondary,
-              size: 22,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(
-                color: selected
-                    ? AppColors.primaryGreen
-                    : AppColors.textSecondary,
-                fontSize: 9.5,
-                fontWeight:
-                    selected ? FontWeight.bold : FontWeight.normal,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class RecyclingCenter {
-  const RecyclingCenter({
-    required this.id,
-    required this.slug,
-    required this.name,
-    required this.address,
-    required this.colony,
-    required this.latitude,
-    required this.longitude,
-    required this.phone,
-    required this.openingHours,
-    required this.isOpen,
-    required this.rating,
-    required this.materials,
-    required this.distanceKm,
-  });
-
-  factory RecyclingCenter.fromJson(
-    Map<String, dynamic> json, {
-    required double userLatitude,
-    required double userLongitude,
-  }) {
-    final double latitude =
-        double.tryParse(json['latitude'].toString()) ?? 0;
-    final double longitude =
-        double.tryParse(json['longitude'].toString()) ?? 0;
-
-    final List<String> materials = <String>[];
-    final dynamic relationships = json['recycling_center_materials'];
-
-    if (relationships is List) {
-      for (final dynamic relationship in relationships) {
-        if (relationship is Map) {
-          final dynamic material = relationship['recycling_materials'];
-
-          if (material is Map && material['name'] != null) {
-            materials.add(material['name'].toString());
-          }
-        }
-      }
-    }
-
-    materials.sort();
-
-    return RecyclingCenter(
-      id: (json['id'] as num).toInt(),
-      slug: json['slug']?.toString() ?? '',
-      name: json['name']?.toString() ?? '',
-      address: json['address']?.toString() ?? '',
-      colony: json['colony']?.toString() ?? '',
-      latitude: latitude,
-      longitude: longitude,
-      phone: json['phone']?.toString(),
-      openingHours: json['opening_hours']?.toString() ?? '',
-      isOpen: json['open_now'] == true,
-      rating: double.tryParse(json['rating'].toString()) ?? 0,
-      materials: materials,
-      distanceKm: _calculateDistance(
-        userLatitude,
-        userLongitude,
-        latitude,
-        longitude,
-      ),
-    );
-  }
-
-  final int id;
-  final String slug;
-  final String name;
-  final String address;
-  final String colony;
-  final double latitude;
-  final double longitude;
-  final String? phone;
-  final String openingHours;
-  final bool isOpen;
-  final double rating;
-  final List<String> materials;
-  final double distanceKm;
-
-  double get closingHour {
-    final List<RegExpMatch> matches =
-        RegExp(r'(\d{1,2}):(\d{2})').allMatches(openingHours).toList();
-
-    if (matches.isEmpty) {
-      return 0;
-    }
-
-    final RegExpMatch last = matches.last;
-    final int hour = int.tryParse(last.group(1) ?? '') ?? 0;
-    final int minute = int.tryParse(last.group(2) ?? '') ?? 0;
-
-    return hour + (minute / 60);
-  }
-
-  static double _calculateDistance(
-    double latitude1,
-    double longitude1,
-    double latitude2,
-    double longitude2,
-  ) {
-    const double earthRadiusKm = 6371;
-
-    final double latitudeDifference =
-        _degreesToRadians(latitude2 - latitude1);
-    final double longitudeDifference =
-        _degreesToRadians(longitude2 - longitude1);
-
-    final double a =
-        math.sin(latitudeDifference / 2) *
-            math.sin(latitudeDifference / 2) +
-        math.cos(_degreesToRadians(latitude1)) *
-            math.cos(_degreesToRadians(latitude2)) *
-            math.sin(longitudeDifference / 2) *
-            math.sin(longitudeDifference / 2);
-
-    final double c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
-
-    return earthRadiusKm * c;
-  }
-
-  static double _degreesToRadians(double degrees) {
-    return degrees * math.pi / 180;
-  }
-}
-
-class FilterSelection {
-  const FilterSelection({
-    required this.openNowOnly,
-    required this.sortBy,
-    required this.maxDistance,
-    required this.materials,
-  });
-
-  final bool openNowOnly;
-  final String sortBy;
-  final double maxDistance;
-  final Set<String> materials;
 }
 
 class _MapInfoCard extends StatelessWidget {
-  const _MapInfoCard({
-    required this.center,
-    required this.onClose,
-  });
+  const _MapInfoCard({required this.center, required this.onClose});
 
   final RecyclingCenter center;
   final VoidCallback onClose;
@@ -1371,9 +1138,7 @@ class _MapInfoCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(15),
-        border: Border.all(
-          color: const Color(0xFF7CE8B2),
-        ),
+        border: Border.all(color: const Color(0xFF7CE8B2)),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.10),
@@ -1392,9 +1157,7 @@ class _MapInfoCard extends StatelessWidget {
                 Text(
                   center.isOpen ? '● Abierto' : '● Cerrado',
                   style: TextStyle(
-                    color: center.isOpen
-                        ? AppColors.primaryGreen
-                        : Colors.red,
+                    color: center.isOpen ? AppColors.primaryGreen : Colors.red,
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
                   ),
@@ -1430,10 +1193,7 @@ class _MapInfoCard extends StatelessWidget {
           IconButton(
             onPressed: onClose,
             visualDensity: VisualDensity.compact,
-            icon: const Icon(
-              Icons.close_rounded,
-              size: 18,
-            ),
+            icon: const Icon(Icons.close_rounded, size: 18),
           ),
         ],
       ),
@@ -1442,10 +1202,7 @@ class _MapInfoCard extends StatelessWidget {
 }
 
 class _MapMarker extends StatelessWidget {
-  const _MapMarker({
-    required this.isSelected,
-    required this.isOpen,
-  });
+  const _MapMarker({required this.isSelected, required this.isOpen});
 
   final bool isSelected;
   final bool isOpen;
@@ -1457,14 +1214,9 @@ class _MapMarker extends StatelessWidget {
       width: isSelected ? 43 : 35,
       height: isSelected ? 43 : 35,
       decoration: BoxDecoration(
-        color: isOpen
-            ? AppColors.primaryGreen
-            : const Color(0xFF9FA7AC),
+        color: isOpen ? AppColors.primaryGreen : const Color(0xFF9FA7AC),
         shape: BoxShape.circle,
-        border: Border.all(
-          color: Colors.white,
-          width: 2,
-        ),
+        border: Border.all(color: Colors.white, width: 2),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.15),
@@ -1473,11 +1225,7 @@ class _MapMarker extends StatelessWidget {
           ),
         ],
       ),
-      child: const Icon(
-        Icons.recycling_rounded,
-        color: Colors.white,
-        size: 19,
-      ),
+      child: const Icon(Icons.recycling_rounded, color: Colors.white, size: 19),
     );
   }
 }
@@ -1501,67 +1249,11 @@ class _CurrentLocationMarker extends StatelessWidget {
           decoration: BoxDecoration(
             color: const Color(0xFF4D8DFF),
             shape: BoxShape.circle,
-            border: Border.all(
-              color: Colors.white,
-              width: 2,
-            ),
+            border: Border.all(color: Colors.white, width: 2),
           ),
         ),
       ),
     );
-  }
-}
-
-class _MapBackgroundPainter extends CustomPainter {
-  const _MapBackgroundPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final Paint backgroundPaint = Paint()
-      ..color = const Color(0xFFB8E0B8);
-
-    canvas.drawRect(Offset.zero & size, backgroundPaint);
-
-    final Paint minorRoadPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.36)
-      ..strokeWidth = 2;
-
-    final Paint majorRoadPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.78)
-      ..strokeWidth = 4;
-
-    for (double x = 0; x < size.width; x += size.width / 5) {
-      canvas.drawLine(
-        Offset(x, 0),
-        Offset(x, size.height),
-        minorRoadPaint,
-      );
-    }
-
-    for (double y = 0; y < size.height; y += size.height / 4) {
-      canvas.drawLine(
-        Offset(0, y),
-        Offset(size.width, y),
-        minorRoadPaint,
-      );
-    }
-
-    canvas.drawLine(
-      Offset(0, size.height * 0.56),
-      Offset(size.width, size.height * 0.56),
-      majorRoadPaint,
-    );
-
-    canvas.drawLine(
-      Offset(size.width * 0.44, 0),
-      Offset(size.width * 0.44, size.height),
-      majorRoadPaint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return false;
   }
 }
 
@@ -1571,18 +1263,13 @@ class _LoadingView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Center(
-      child: CircularProgressIndicator(
-        color: AppColors.primaryGreen,
-      ),
+      child: CircularProgressIndicator(color: AppColors.primaryGreen),
     );
   }
 }
 
 class _ErrorView extends StatelessWidget {
-  const _ErrorView({
-    required this.message,
-    required this.onRetry,
-  });
+  const _ErrorView({required this.message, required this.onRetry});
 
   final String message;
   final VoidCallback onRetry;
@@ -1612,16 +1299,10 @@ class _ErrorView extends StatelessWidget {
         Text(
           message,
           textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-          ),
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
         ),
         const SizedBox(height: 18),
-        FilledButton(
-          onPressed: onRetry,
-          child: const Text('Reintentar'),
-        ),
+        FilledButton(onPressed: onRetry, child: const Text('Reintentar')),
       ],
     );
   }

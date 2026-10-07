@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../core/data/colonies.dart';
 import '../../../core/theme/app_colors.dart';
-
+import '../../../core/utils/validators.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -27,17 +28,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   String? _selectedColony;
 
-  final List<String> _colonies = const [
-    'Cuajimalpa',
-    'Santa Fe',
-    'San Mateo Tlaltenango',
-    'San Lorenzo Acopilco',
-    'Contadero',
-    'El Yaqui',
-    'Lomas de Vista Hermosa',
-    'Otra Colonia',
-  ];
-
   @override
   void dispose() {
     _nameController.dispose();
@@ -48,8 +38,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _createAccount() async {
-    final bool formIsValid =
-        _formKey.currentState?.validate() ?? false;
+    final bool formIsValid = _formKey.currentState?.validate() ?? false;
 
     if (!formIsValid) {
       return;
@@ -71,8 +60,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     });
 
     try {
-      final AuthResponse response =
-          await Supabase.instance.client.auth.signUp(
+      final AuthResponse response = await Supabase.instance.client.auth.signUp(
         email: _emailController.text.trim(),
         password: _passwordController.text,
         data: {
@@ -148,10 +136,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text(message), backgroundColor: Colors.red),
       );
     } catch (error) {
       if (!mounted) {
@@ -180,53 +165,31 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }) {
     return InputDecoration(
       hintText: hintText,
-      hintStyle: const TextStyle(
-        color: AppColors.textSecondary,
-        fontSize: 15,
-      ),
-      prefixIcon: Icon(
-        prefixIcon,
-        color: AppColors.darkGreen,
-        size: 21,
-      ),
+      hintStyle: const TextStyle(color: AppColors.textSecondary, fontSize: 15),
+      prefixIcon: Icon(prefixIcon, color: AppColors.darkGreen, size: 21),
       suffixIcon: suffixIcon,
       filled: true,
       fillColor: AppColors.fieldBackground,
-      contentPadding: const EdgeInsets.symmetric(
-        horizontal: 16,
-        vertical: 18,
-      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(
-          color: AppColors.border,
-        ),
+        borderSide: const BorderSide(color: AppColors.border),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(
-          color: AppColors.border,
-        ),
+        borderSide: const BorderSide(color: AppColors.border),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(
-          color: AppColors.primaryGreen,
-          width: 1.5,
-        ),
+        borderSide: const BorderSide(color: AppColors.primaryGreen, width: 1.5),
       ),
       errorBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(
-          color: Colors.red,
-        ),
+        borderSide: const BorderSide(color: Colors.red),
       ),
       focusedErrorBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(
-          color: Colors.red,
-          width: 1.5,
-        ),
+        borderSide: const BorderSide(color: Colors.red, width: 1.5),
       ),
     );
   }
@@ -248,12 +211,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       backgroundColor: AppColors.background,
       body: SafeArea(
         child: SingleChildScrollView(
-          child: Column(
-            children: [
-              _buildHeader(),
-              _buildRegisterForm(),
-            ],
-          ),
+          child: Column(children: [_buildHeader(), _buildRegisterForm()]),
         ),
       ),
     );
@@ -265,10 +223,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       height: 190,
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [
-            AppColors.darkGreen,
-            AppColors.mediumGreen,
-          ],
+          colors: [AppColors.darkGreen, AppColors.mediumGreen],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -284,9 +239,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: 0.18),
                 borderRadius: BorderRadius.circular(13),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.25),
-                ),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
               ),
               child: IconButton(
                 onPressed: () {
@@ -332,10 +285,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 const SizedBox(height: 3),
                 const Text(
                   'Únete a EcoCuajimalpa',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                  ),
+                  style: TextStyle(color: Colors.white, fontSize: 14),
                 ),
               ],
             ),
@@ -362,17 +312,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 hintText: 'Tu nombre',
                 prefixIcon: Icons.person_outline,
               ),
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Ingresa tu nombre completo';
-                }
-
-                if (value.trim().length < 3) {
-                  return 'El nombre es demasiado corto';
-                }
-
-                return null;
-              },
+              validator: Validators.fullName,
             ),
             const SizedBox(height: 18),
             _buildLabel('Correo electrónico'),
@@ -384,21 +324,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 hintText: 'tu@correo.com',
                 prefixIcon: Icons.email_outlined,
               ),
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Ingresa tu correo electrónico';
-                }
-
-                final RegExp emailExpression = RegExp(
-                  r'^[^@\s]+@[^@\s]+\.[^@\s]+$',
-                );
-
-                if (!emailExpression.hasMatch(value.trim())) {
-                  return 'Ingresa un correo válido';
-                }
-
-                return null;
-              },
+              validator: Validators.email,
             ),
             const SizedBox(height: 18),
             _buildLabel('Contraseña'),
@@ -423,17 +349,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ),
                 ),
               ),
-              validator: (value) {
-                if (value == null || value.isEmpty) {
-                  return 'Ingresa una contraseña';
-                }
-
-                if (value.length < 8) {
-                  return 'Debe tener al menos 8 caracteres';
-                }
-
-                return null;
-              },
+              validator: Validators.password,
             ),
             const SizedBox(height: 18),
             _buildLabel('Confirmar contraseña'),
@@ -447,8 +363,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 suffixIcon: IconButton(
                   onPressed: () {
                     setState(() {
-                      _obscureConfirmPassword =
-                          !_obscureConfirmPassword;
+                      _obscureConfirmPassword = !_obscureConfirmPassword;
                     });
                   },
                   icon: Icon(
@@ -459,17 +374,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ),
                 ),
               ),
-              validator: (value) {
-                if (value == null || value.isEmpty) {
-                  return 'Confirma tu contraseña';
-                }
-
-                if (value != _passwordController.text) {
-                  return 'Las contraseñas no coinciden';
-                }
-
-                return null;
-              },
+              validator: (value) =>
+                  Validators.confirmPassword(value, _passwordController.text),
             ),
             const SizedBox(height: 18),
             _buildLabel('Colonia'),
@@ -481,7 +387,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 hintText: 'Selecciona una colonia',
                 prefixIcon: Icons.location_on_outlined,
               ),
-              items: _colonies.map((String colony) {
+              items: cuajimalpaColonies.map((String colony) {
                 return DropdownMenuItem<String>(
                   value: colony,
                   child: Text(colony),
@@ -492,13 +398,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   _selectedColony = value;
                 });
               },
-              validator: (value) {
-                if (value == null || value.isEmpty) {
-                  return 'Selecciona tu colonia';
-                }
-
-                return null;
-              },
+              validator: Validators.colony,
             ),
             const SizedBox(height: 14),
             Row(
@@ -558,8 +458,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 onPressed: _isLoading ? null : _createAccount,
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.darkGreen,
-                  disabledBackgroundColor:
-                      AppColors.darkGreen.withValues(alpha: 0.6),
+                  disabledBackgroundColor: AppColors.darkGreen.withValues(
+                    alpha: 0.6,
+                  ),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
                   ),

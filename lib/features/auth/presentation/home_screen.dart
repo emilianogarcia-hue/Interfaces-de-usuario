@@ -1,136 +1,147 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/theme/app_colors.dart';
-import '../../recycling/presentation/recycling_centers_screen.dart';
-import '../../reports/presentation/report_screen.dart';
-import '../../learning/presentation/learn_screen.dart';
+import '../../../core/utils/formatters.dart';
+import '../../../core/widgets/app_bottom_nav.dart';
+import '../../campaigns/data/campaign.dart';
+import '../../campaigns/data/campaigns_repository.dart';
+import '../../profile/data/profile_repository.dart';
+import '../../reports/data/report.dart';
+import '../../reports/data/reports_repository.dart';
+import '../../reports/presentation/my_reports_screen.dart';
+import '../../shell/main_shell.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({
+    super.key,
+    this.profileRepository,
+    this.reportsRepository,
+    this.campaignsRepository,
+  });
+
+  final ProfileRepository? profileRepository;
+  final ReportsRepository? reportsRepository;
+  final CampaignsRepository? campaignsRepository;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final SupabaseClient _supabase = Supabase.instance.client;
+  late final ProfileRepository _profileRepository =
+      widget.profileRepository ?? SupabaseProfileRepository();
+  late final ReportsRepository _reportsRepository =
+      widget.reportsRepository ?? SupabaseReportsRepository();
+  late final CampaignsRepository _campaignsRepository =
+      widget.campaignsRepository ?? SupabaseCampaignsRepository();
 
   bool _isLoadingProfile = true;
 
-  String _fullName = 'Usuario';
+  String _firstName = 'Usuario';
   int _reportsCount = 0;
   double _recycledKg = 0;
+  int? _activeCampaigns;
+  List<Report> _recentReports = <Report>[];
+
+  MainShellScope? _shell;
 
   @override
   void initState() {
     super.initState();
-    _loadProfile();
+    _loadDashboard();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    final MainShellScope? shell = MainShellScope.maybeOf(context);
+
+    if (shell != _shell) {
+      _shell?.dataVersion.removeListener(_loadDashboard);
+      _shell = shell;
+      _shell?.dataVersion.addListener(_loadDashboard);
+    }
+  }
+
+  @override
+  void dispose() {
+    _shell?.dataVersion.removeListener(_loadDashboard);
+    super.dispose();
+  }
+
+  Future<void> _loadDashboard() async {
+    await Future.wait<void>(<Future<void>>[
+      _loadProfile(),
+      _loadRecentReports(),
+      _loadCampaigns(),
+    ]);
   }
 
   Future<void> _loadProfile() async {
-    final User? user = _supabase.auth.currentUser;
+    try {
+      final UserProfile profile = await _profileRepository.load();
 
-    if (user == null) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _firstName = profile.firstName;
+        _reportsCount = profile.reportsCount;
+        _recycledKg = profile.recycledKg;
+        _isLoadingProfile = false;
+      });
+    } catch (_) {
       if (mounted) {
         setState(() {
           _isLoadingProfile = false;
         });
       }
-      return;
     }
+  }
 
+  Future<void> _loadRecentReports() async {
     try {
-      final Map<String, dynamic>? profile = await _supabase
-          .from('profiles')
-          .select('full_name, reports_count, recycled_kg')
-          .eq('id', user.id)
-          .maybeSingle();
+      final List<Report> reports = await _reportsRepository.myReports(limit: 3);
 
-      if (!mounted) {
-        return;
+      if (mounted) {
+        setState(() {
+          _recentReports = reports;
+        });
       }
-
-      final String metadataName =
-          user.userMetadata?['full_name']?.toString().trim() ?? '';
-
-      setState(() {
-        final String profileName =
-            profile?['full_name']?.toString().trim() ?? '';
-
-        _fullName = profileName.isNotEmpty
-            ? profileName
-            : metadataName.isNotEmpty
-                ? metadataName
-                : 'Usuario';
-
-        _reportsCount = (profile?['reports_count'] as num?)?.toInt() ?? 0;
-        _recycledKg = (profile?['recycled_kg'] as num?)?.toDouble() ?? 0;
-        _isLoadingProfile = false;
-      });
     } catch (_) {
-      if (!mounted) {
-        return;
+      // La sección muestra el mensaje de bienvenida si no hay datos.
+    }
+  }
+
+  Future<void> _loadCampaigns() async {
+    try {
+      final List<Campaign> campaigns = await _campaignsRepository
+          .activeCampaigns();
+
+      if (mounted) {
+        setState(() {
+          _activeCampaigns = campaigns.length;
+        });
       }
-
-      final String metadataName =
-          user.userMetadata?['full_name']?.toString().trim() ?? '';
-
-      setState(() {
-        _fullName = metadataName.isNotEmpty ? metadataName : 'Usuario';
-        _isLoadingProfile = false;
-      });
+    } catch (_) {
+      // Sin conexión se muestra un guion en lugar del número.
     }
   }
 
-  String get _firstName {
-    final String name = _fullName.trim();
-
-    if (name.isEmpty) {
-      return 'Usuario';
-    }
-
-    return name.split(RegExp(r'\s+')).first;
+  void _openReportScreen() {
+    MainShellScope.maybeOf(context)?.openReport();
   }
 
-  String get _formattedRecycledKg {
-    if (_recycledKg == _recycledKg.roundToDouble()) {
-      return _recycledKg.toInt().toString();
-    }
-
-    return _recycledKg.toStringAsFixed(1);
+  void _openTab(AppTab tab) {
+    MainShellScope.maybeOf(context)?.selectTab(tab);
   }
-void _openReportScreen() {
-  Navigator.push(
-    context,
-    MaterialPageRoute<void>(
-      builder: (context) => const ReportScreen(),
-    ),
-  );
-}
-void _openLearnScreen() {
-  Navigator.push(
-    context,
-    MaterialPageRoute<void>(
-      builder: (context) => const LearnScreen(),
-    ),
-  );
-}
-  void _openRecyclingCenters() {
+
+  void _openMyReports() {
     Navigator.push(
       context,
-      MaterialPageRoute<void>(
-        builder: (context) => const RecyclingCentersScreen(),
-      ),
-    );
-  }
-
-  void _showPendingMessage(String moduleName) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('El módulo "$moduleName" será el siguiente paso.'),
-        backgroundColor: AppColors.darkGreen,
-      ),
+      MaterialPageRoute<void>(builder: (context) => const MyReportsScreen()),
     );
   }
 
@@ -140,44 +151,39 @@ void _openLearnScreen() {
       backgroundColor: AppColors.background,
       body: SafeArea(
         child: RefreshIndicator(
-          onRefresh: _loadProfile,
+          onRefresh: _loadDashboard,
           color: AppColors.primaryGreen,
           child: CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
-              SliverToBoxAdapter(
-                child: _buildHeader(),
-              ),
+              SliverToBoxAdapter(child: _buildHeader()),
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(12, 20, 12, 105),
                 sliver: SliverList(
-                  delegate: SliverChildListDelegate(
-                    [
-                      const Text(
-                        'Acciones rápidas',
-                        style: TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                  delegate: SliverChildListDelegate([
+                    const Text(
+                      'Acciones rápidas',
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
                       ),
-                      const SizedBox(height: 12),
-                      _buildQuickActions(),
-                      const SizedBox(height: 18),
-                      _buildDailyTip(),
-                      const SizedBox(height: 17),
-                      _buildRecentActivityHeader(),
-                      const SizedBox(height: 10),
-                      _buildRecentActivityCard(),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 12),
+                    _buildQuickActions(),
+                    const SizedBox(height: 18),
+                    _buildDailyTip(),
+                    const SizedBox(height: 17),
+                    _buildRecentActivityHeader(),
+                    const SizedBox(height: 10),
+                    _buildRecentActivityCard(),
+                  ]),
                 ),
               ),
             ],
           ),
         ),
       ),
-      bottomNavigationBar: _buildBottomNavigation(),
     );
   }
 
@@ -187,10 +193,7 @@ void _openLearnScreen() {
       padding: const EdgeInsets.fromLTRB(15, 18, 15, 20),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [
-            AppColors.darkGreen,
-            AppColors.mediumGreen,
-          ],
+          colors: [AppColors.darkGreen, AppColors.mediumGreen],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -246,7 +249,7 @@ void _openLearnScreen() {
                     color: Colors.white.withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(18),
                     child: InkWell(
-                      onTap: () => _showPendingMessage('Notificaciones'),
+                      onTap: _openMyReports,
                       borderRadius: BorderRadius.circular(18),
                       child: const SizedBox(
                         width: 46,
@@ -255,22 +258,6 @@ void _openLearnScreen() {
                           Icons.notifications_none_rounded,
                           color: Colors.white,
                           size: 26,
-                        ),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    top: 5,
-                    right: 5,
-                    child: Container(
-                      width: 10,
-                      height: 10,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFC857),
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: Colors.white,
-                          width: 1.5,
                         ),
                       ),
                     ),
@@ -293,7 +280,7 @@ void _openLearnScreen() {
               Expanded(
                 child: _buildStatisticCard(
                   icon: Icons.recycling_rounded,
-                  value: _formattedRecycledKg,
+                  value: Formatters.kilograms(_recycledKg),
                   label: 'Kg reciclados',
                 ),
               ),
@@ -301,7 +288,7 @@ void _openLearnScreen() {
               Expanded(
                 child: _buildStatisticCard(
                   icon: Icons.eco_outlined,
-                  value: '3',
+                  value: _activeCampaigns?.toString() ?? '-',
                   label: 'Campañas activas',
                 ),
               ),
@@ -319,25 +306,16 @@ void _openLearnScreen() {
   }) {
     return Container(
       height: 82,
-      padding: const EdgeInsets.symmetric(
-        horizontal: 6,
-        vertical: 8,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.17),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: 0.23),
-        ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.23)),
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            icon,
-            color: Colors.white,
-            size: 20,
-          ),
+          Icon(icon, color: Colors.white, size: 20),
           const SizedBox(height: 1),
           Text(
             value,
@@ -354,10 +332,7 @@ void _openLearnScreen() {
             child: Text(
               label,
               maxLines: 1,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 9.5,
-              ),
+              style: const TextStyle(color: Colors.white, fontSize: 9.5),
             ),
           ),
         ],
@@ -392,8 +367,7 @@ void _openLearnScreen() {
               borderColor: const Color(0xFF5DE39B),
               backgroundColor: const Color(0xFFF2FFF8),
               iconColor: AppColors.primaryGreen,
-              badgeText: '5 cercanos',
-              onTap: _openRecyclingCenters,
+              onTap: () => _openTab(AppTab.reciclaje),
             ),
             _buildActionCard(
               title: 'Aprende a Reciclar',
@@ -402,9 +376,7 @@ void _openLearnScreen() {
               borderColor: const Color(0xFF66E79A),
               backgroundColor: const Color(0xFFF1FFF6),
               iconColor: const Color(0xFF00C968),
-              badgeText: 'Nuevo',
-             onTap: _openLearnScreen,
-
+              onTap: () => _openTab(AppTab.aprender),
             ),
             _buildActionCard(
               title: 'Campañas Activas',
@@ -413,8 +385,10 @@ void _openLearnScreen() {
               borderColor: const Color(0xFF3EDDC4),
               backgroundColor: const Color(0xFFF1FFFC),
               iconColor: const Color(0xFF00AE92),
-              badgeText: '3 activas',
-              onTap: () => _showPendingMessage('Campañas'),
+              badgeText: (_activeCampaigns ?? 0) > 0
+                  ? '$_activeCampaigns activas'
+                  : null,
+              onTap: () => _openTab(AppTab.campanas),
             ),
           ],
         );
@@ -442,10 +416,7 @@ void _openLearnScreen() {
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(17),
-            border: Border.all(
-              color: borderColor,
-              width: 1.4,
-            ),
+            border: Border.all(color: borderColor, width: 1.4),
           ),
           child: Stack(
             children: [
@@ -466,11 +437,7 @@ void _openLearnScreen() {
                         ),
                       ],
                     ),
-                    child: Icon(
-                      icon,
-                      color: iconColor,
-                      size: 25,
-                    ),
+                    child: Icon(icon, color: iconColor, size: 25),
                   ),
                   const SizedBox(height: 20),
                   Text(
@@ -532,10 +499,7 @@ void _openLearnScreen() {
       padding: const EdgeInsets.fromLTRB(15, 14, 15, 14),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [
-            Color(0xFF009E68),
-            Color(0xFF10BD7E),
-          ],
+          colors: [Color(0xFF009E68), Color(0xFF10BD7E)],
           begin: Alignment.centerLeft,
           end: Alignment.centerRight,
         ),
@@ -601,7 +565,7 @@ void _openLearnScreen() {
           ),
         ),
         TextButton(
-          onPressed: () => _showPendingMessage('Actividad reciente'),
+          onPressed: _openMyReports,
           style: TextButton.styleFrom(
             padding: const EdgeInsets.symmetric(horizontal: 4),
           ),
@@ -629,24 +593,92 @@ void _openLearnScreen() {
   }
 
   Widget _buildRecentActivityCard() {
+    if (_recentReports.isEmpty) {
+      return _buildWelcomeCard();
+    }
+
+    return Column(
+      children: _recentReports
+          .map(
+            (report) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _buildReportActivity(report),
+            ),
+          )
+          .toList(),
+    );
+  }
+
+  Widget _buildReportActivity(Report report) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: _openMyReports,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Row(
+            children: [
+              const CircleAvatar(
+                radius: 21,
+                backgroundColor: AppColors.lightGreen,
+                child: Icon(
+                  Icons.description_outlined,
+                  color: AppColors.primaryGreen,
+                ),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      report.category,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${report.colony} · '
+                      '${Formatters.relativeDate(report.createdAt)}',
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 10.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              ReportStatusChip(status: report.status),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWelcomeCard() {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: AppColors.border,
-        ),
+        border: Border.all(color: AppColors.border),
       ),
       child: const Row(
         children: [
           CircleAvatar(
             radius: 21,
             backgroundColor: AppColors.lightGreen,
-            child: Icon(
-              Icons.eco_outlined,
-              color: AppColors.primaryGreen,
-            ),
+            child: Icon(Icons.eco_outlined, color: AppColors.primaryGreen),
           ),
           SizedBox(width: 11),
           Expanded(
@@ -674,118 +706,6 @@ void _openLearnScreen() {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildBottomNavigation() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: const Border(
-          top: BorderSide(color: AppColors.border),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 12,
-            offset: const Offset(0, -3),
-          ),
-        ],
-      ),
-      child: SafeArea(
-        top: false,
-        child: SizedBox(
-          height: 70,
-          child: Row(
-            children: [
-              _buildNavigationItem(
-                icon: Icons.home_outlined,
-                selectedIcon: Icons.home_rounded,
-                label: 'Inicio',
-                isSelected: true,
-                onTap: () {},
-              ),
-              _buildNavigationItem(
-                icon: Icons.recycling_outlined,
-                selectedIcon: Icons.recycling_rounded,
-                label: 'Reciclaje',
-                onTap: _openRecyclingCenters,
-              ),
-              _buildNavigationItem(
-                icon: Icons.description_outlined,
-                selectedIcon: Icons.description_rounded,
-                label: 'Reportar',
-                onTap: _openReportScreen,
-
-              ),
-              _buildNavigationItem(
-                icon: Icons.menu_book_outlined,
-                selectedIcon: Icons.menu_book_rounded,
-                label: 'Aprender',
-                onTap: _openLearnScreen,
-              ),
-              _buildNavigationItem(
-                icon: Icons.campaign_outlined,
-                selectedIcon: Icons.campaign_rounded,
-                label: 'Campañas',
-                onTap: () => _showPendingMessage('Campañas'),
-              ),
-              _buildNavigationItem(
-                icon: Icons.person_outline_rounded,
-                selectedIcon: Icons.person_rounded,
-                label: 'Perfil',
-                onTap: () => _showPendingMessage('Perfil'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildNavigationItem({
-    required IconData icon,
-    required IconData selectedIcon,
-    required String label,
-    required VoidCallback onTap,
-    bool isSelected = false,
-  }) {
-    return Expanded(
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 2,
-            vertical: 8,
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                isSelected ? selectedIcon : icon,
-                color: isSelected
-                    ? AppColors.primaryGreen
-                    : AppColors.textSecondary,
-                size: 22,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: isSelected
-                      ? AppColors.primaryGreen
-                      : AppColors.textSecondary,
-                  fontSize: 9.5,
-                  fontWeight:
-                      isSelected ? FontWeight.bold : FontWeight.normal,
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }

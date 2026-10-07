@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/app_bottom_nav.dart';
 import '../../recycling/presentation/recycling_centers_screen.dart';
-import '../../reports/presentation/report_screen.dart';
+import '../../shell/main_shell.dart';
 
 class LearnScreen extends StatefulWidget {
   const LearnScreen({super.key});
@@ -134,29 +135,18 @@ class _LearnScreenState extends State<LearnScreen> {
     ),
   ];
 
-  void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: AppColors.darkGreen,
-      ),
-    );
-  }
-
   void _openRecycling() {
-    Navigator.pushReplacement(
+    final MainShellScope? shell = MainShellScope.maybeOf(context);
+
+    if (shell != null) {
+      shell.selectTab(AppTab.reciclaje);
+      return;
+    }
+
+    Navigator.push(
       context,
       MaterialPageRoute<void>(
         builder: (context) => const RecyclingCentersScreen(),
-      ),
-    );
-  }
-
-  void _openReports() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute<void>(
-        builder: (context) => const ReportScreen(),
       ),
     );
   }
@@ -168,32 +158,27 @@ class _LearnScreenState extends State<LearnScreen> {
       body: SafeArea(
         child: CustomScrollView(
           slivers: [
-            SliverToBoxAdapter(
-              child: _buildHeader(),
-            ),
+            SliverToBoxAdapter(child: _buildHeader()),
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(15, 16, 15, 105),
               sliver: SliverList(
-                delegate: SliverChildListDelegate(
-                  [
-                    _buildIntroductionCard(),
-                    const SizedBox(height: 14),
-                    ...List.generate(
-                      _categories.length,
-                      (index) => Padding(
-                        padding: const EdgeInsets.only(bottom: 11),
-                        child: _buildCategoryCard(index),
-                      ),
+                delegate: SliverChildListDelegate([
+                  _buildIntroductionCard(),
+                  const SizedBox(height: 14),
+                  ...List.generate(
+                    _categories.length,
+                    (index) => Padding(
+                      padding: const EdgeInsets.only(bottom: 11),
+                      child: _buildCategoryCard(index),
                     ),
-                    _buildHelpCard(),
-                  ],
-                ),
+                  ),
+                  _buildHelpCard(),
+                ]),
               ),
             ),
           ],
         ),
       ),
-      bottomNavigationBar: _buildBottomNavigation(),
     );
   }
 
@@ -203,24 +188,26 @@ class _LearnScreenState extends State<LearnScreen> {
       padding: const EdgeInsets.fromLTRB(15, 16, 15, 14),
       child: Row(
         children: [
-          Material(
-            color: AppColors.lightGreen,
-            borderRadius: BorderRadius.circular(14),
-            child: InkWell(
-              onTap: () => Navigator.pop(context),
+          if (Navigator.canPop(context)) ...[
+            Material(
+              color: AppColors.lightGreen,
               borderRadius: BorderRadius.circular(14),
-              child: const SizedBox(
-                width: 42,
-                height: 42,
-                child: Icon(
-                  Icons.arrow_back_ios_new_rounded,
-                  size: 18,
-                  color: AppColors.darkGreen,
+              child: InkWell(
+                onTap: () => Navigator.pop(context),
+                borderRadius: BorderRadius.circular(14),
+                child: const SizedBox(
+                  width: 42,
+                  height: 42,
+                  child: Icon(
+                    Icons.arrow_back_ios_new_rounded,
+                    size: 18,
+                    color: AppColors.darkGreen,
+                  ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(width: 12),
+            const SizedBox(width: 12),
+          ],
           const Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -255,10 +242,7 @@ class _LearnScreenState extends State<LearnScreen> {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [
-            AppColors.darkGreen,
-            AppColors.mediumGreen,
-          ],
+          colors: [AppColors.darkGreen, AppColors.mediumGreen],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -356,11 +340,7 @@ class _LearnScreenState extends State<LearnScreen> {
                         color: category.color,
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: Icon(
-                        category.icon,
-                        color: Colors.white,
-                        size: 21,
-                      ),
+                      child: Icon(category.icon, color: Colors.white, size: 21),
                     ),
                     const SizedBox(width: 11),
                     Expanded(
@@ -423,16 +403,11 @@ class _LearnScreenState extends State<LearnScreen> {
         children: [
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.symmetric(
-              horizontal: 11,
-              vertical: 9,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(13),
-              border: Border.all(
-                color: AppColors.border,
-              ),
+              border: Border.all(color: AppColors.border),
             ),
             child: Row(
               children: [
@@ -503,17 +478,12 @@ class _LearnScreenState extends State<LearnScreen> {
             decoration: BoxDecoration(
               color: category.lightColor,
               borderRadius: BorderRadius.circular(13),
-              border: Border.all(
-                color: category.color.withValues(alpha: 0.55),
-              ),
+              border: Border.all(color: category.color.withValues(alpha: 0.55)),
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  '💡',
-                  style: TextStyle(fontSize: 16),
-                ),
+                const Text('💡', style: TextStyle(fontSize: 16)),
                 const SizedBox(width: 9),
                 Expanded(
                   child: Text(
@@ -539,10 +509,7 @@ class _LearnScreenState extends State<LearnScreen> {
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [
-            Color(0xFF009E68),
-            Color(0xFF12BE82),
-          ],
+          colors: [Color(0xFF009E68), Color(0xFF12BE82)],
         ),
         borderRadius: BorderRadius.circular(17),
       ),
@@ -560,11 +527,7 @@ class _LearnScreenState extends State<LearnScreen> {
           const Text(
             'Consulta los centros de reciclaje para saber dónde llevar tus residuos.',
             textAlign: TextAlign.center,
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 10.5,
-              height: 1.35,
-            ),
+            style: TextStyle(color: Colors.white, fontSize: 10.5, height: 1.35),
           ),
           const SizedBox(height: 10),
           OutlinedButton.icon(
@@ -577,97 +540,6 @@ class _LearnScreenState extends State<LearnScreen> {
             label: const Text('Ver centros'),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildBottomNavigation() {
-    return Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(
-          top: BorderSide(color: AppColors.border),
-        ),
-      ),
-      child: SafeArea(
-        top: false,
-        child: SizedBox(
-          height: 70,
-          child: Row(
-            children: [
-              _navigationItem(
-                icon: Icons.home_outlined,
-                label: 'Inicio',
-                onTap: () => Navigator.of(context).popUntil(
-                  (route) => route.isFirst,
-                ),
-              ),
-              _navigationItem(
-                icon: Icons.location_on_outlined,
-                label: 'Reciclaje',
-                onTap: _openRecycling,
-              ),
-              _navigationItem(
-                icon: Icons.description_outlined,
-                label: 'Reportar',
-                onTap: _openReports,
-              ),
-              _navigationItem(
-                icon: Icons.menu_book_rounded,
-                label: 'Aprender',
-                selected: true,
-                onTap: () {},
-              ),
-              _navigationItem(
-                icon: Icons.campaign_outlined,
-                label: 'Campañas',
-                onTap: () => _showMessage('Módulo Campañas pendiente.'),
-              ),
-              _navigationItem(
-                icon: Icons.person_outline_rounded,
-                label: 'Perfil',
-                onTap: () => _showMessage('Módulo Perfil pendiente.'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _navigationItem({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-    bool selected = false,
-  }) {
-    return Expanded(
-      child: InkWell(
-        onTap: onTap,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              icon,
-              color: selected
-                  ? AppColors.primaryGreen
-                  : AppColors.textSecondary,
-              size: 22,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(
-                color: selected
-                    ? AppColors.primaryGreen
-                    : AppColors.textSecondary,
-                fontSize: 9.5,
-                fontWeight:
-                    selected ? FontWeight.bold : FontWeight.normal,
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
