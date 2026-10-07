@@ -172,6 +172,77 @@ void main() {
 
   setUp(requests.clear);
 
+  testWidgets('CP-AUT-001', (tester) async {
+    server = (request) {
+      final String path = request.url.path;
+      if (path.endsWith('/auth/v1/signup')) {
+        return json(<String, dynamic>{
+          'access_token': 'token-de-prueba',
+          'token_type': 'bearer',
+          'expires_in': 3600,
+          'expires_at': 4102444800,
+          'refresh_token': 'refresh-de-prueba',
+          'user': user('nuevo@correo.mx'),
+        });
+      }
+      return json(<String, dynamic>{});
+    };
+
+    phone(tester, height: 2800);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: TextButton(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (context) => const RegisterScreen(),
+                  ),
+                ),
+                child: const Text('Inicio de sesión'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Inicio de sesión'));
+    await tester.pumpAndSettle();
+
+    final Finder fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(0), 'Luis Gómez');
+    await tester.enterText(fields.at(1), 'nuevo@correo.mx');
+    await tester.enterText(fields.at(2), 'claveSegura1');
+    await tester.enterText(fields.at(3), 'claveSegura1');
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Contadero').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Checkbox));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Crear cuenta'));
+    await network(tester);
+
+    final http.Request signup = requests.firstWhere(
+      (r) => r.url.path.endsWith('/signup'),
+    );
+    final Map<String, dynamic> body =
+        jsonDecode(signup.body) as Map<String, dynamic>;
+    expect(body['email'], 'nuevo@correo.mx');
+    expect((body['data'] as Map<String, dynamic>)['colony'], 'Contadero');
+    expect(
+      find.text('Cuenta creada correctamente. Ya puedes iniciar sesión.'),
+      findsOneWidget,
+    );
+    expect(find.byType(RegisterScreen), findsNothing);
+    expect(Supabase.instance.client.auth.currentSession, isNull);
+    await shot('CP-AUT-001');
+  });
+
   testWidgets('CP-AUT-005', (tester) async {
     server = (request) {
       if (request.url.path.endsWith('/auth/v1/signup')) {
