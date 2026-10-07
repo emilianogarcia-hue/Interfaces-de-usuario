@@ -12,3 +12,7 @@ respuestas que imitan las del servidor real). Para correrlas, cópialas a `test/
 la rama `feature/completar-app` (sin la extensión `.txt`, y `foto_reporte.jpg` en
 `test/_shots/assets/`) y ejecuta
 `flutter test --update-goldens test/_shots`.
+
+CP-NOT-004 se probó cargando `schema.sql` en Postgres 16 local, con
+`supabase_stubs.sql` para lo mínimo de Supabase (esquema `auth`, roles y
+permisos por defecto), y luego `not004.sql`.
