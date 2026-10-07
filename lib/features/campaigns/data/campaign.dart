@@ -23,8 +23,7 @@ class Campaign {
       category: json['category']?.toString(),
       startsAt: DateTime.parse(json['starts_at'].toString()).toLocal(),
       endsAt: DateTime.parse(json['ends_at'].toString()).toLocal(),
-      participantsCount:
-          (json['participants_count'] as num?)?.toInt() ?? 0,
+      participantsCount: (json['participants_count'] as num?)?.toInt() ?? 0,
       joined: joined,
     );
   }

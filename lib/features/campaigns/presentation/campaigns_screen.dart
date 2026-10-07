@@ -227,7 +227,9 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
             style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
           ),
           const SizedBox(height: 12),
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
             children: [
               ChoiceChip(
                 label: const Text('Todas'),
@@ -238,7 +240,6 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
                 ),
                 onSelected: (_) => setState(() => _onlyJoined = false),
               ),
-              const SizedBox(width: 8),
               ChoiceChip(
                 label: Text('Mis campañas ($joinedCount)'),
                 selected: _onlyJoined,
