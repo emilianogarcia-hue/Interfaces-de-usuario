@@ -1,5 +1,9 @@
 \set ON_ERROR_STOP 1
 -- Permisos que Supabase da por defecto.
+grant usage on schema public, auth to anon, authenticated;
+grant all on all tables in schema public to anon, authenticated;
+grant all on all sequences in schema public to anon, authenticated;
+grant execute on all functions in schema auth to anon, authenticated;
 insert into auth.users (id, email, raw_user_meta_data) values
   ('6f1c2b1e-0000-4000-8000-000000000001', 'ana@correo.mx', '{"full_name":"Ana Pérez","colony":"Santa Fe"}');
 -- El usuario crea su reporte con su sesión.
