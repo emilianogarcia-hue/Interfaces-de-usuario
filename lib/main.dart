@@ -1,17 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'core/config/supabase_config.dart';
 import 'core/theme/app_colors.dart';
-import 'features/auth/presentation/home_screen.dart';
 import 'features/auth/presentation/login_screen.dart';
+import 'features/shell/main_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Supabase.initialize(
-    url: 'https://ulfwxpwjhkerwmilnyyq.supabase.co',
-    publishableKey:
-        'sb_publishable_FzC2FUFNCSWsMtP3IFT1ag_dOUe2NW-',
+    url: SupabaseConfig.url,
+    publishableKey: SupabaseConfig.publishableKey,
   );
 
   runApp(const EcoCuajimalpaApp());
@@ -28,26 +28,33 @@ class EcoCuajimalpaApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         scaffoldBackgroundColor: AppColors.background,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: AppColors.primaryGreen,
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: AppColors.primaryGreen),
       ),
       home: const AuthGate(),
     );
   }
 }
 
+/// Muestra el inicio de sesión o la app según la sesión de Supabase, y
+/// cambia sola cuando el usuario entra o sale.
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final bool hasSession = Supabase.instance.client.auth.currentSession != null;
+    final GoTrueClient auth = Supabase.instance.client.auth;
 
-    if (hasSession) {
-      return const HomeScreen();
-    }
+    return StreamBuilder<AuthState>(
+      stream: auth.onAuthStateChange,
+      builder: (context, snapshot) {
+        final Session? session = snapshot.data?.session ?? auth.currentSession;
 
-    return const LoginScreen();
+        if (session != null) {
+          return const MainShell();
+        }
+
+        return const LoginScreen();
+      },
+    );
   }
 }

@@ -66,5 +66,16 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>EcoCuajimalpa usa tu ubicación para mostrar los centros de reciclaje cercanos y ubicar tus reportes.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>EcoCuajimalpa usa la cámara para tomar fotos de los problemas que reportas.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>EcoCuajimalpa necesita acceso a tus fotos para adjuntarlas a tus reportes.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>https</string>
+		<string>tel</string>
+	</array>
 </dict>
 </plist>

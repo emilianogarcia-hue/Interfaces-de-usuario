@@ -1,42 +1,60 @@
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
+import '../../../core/data/colonies.dart';
+import '../../../core/services/location_service.dart';
 import '../../../core/theme/app_colors.dart';
+import '../data/report.dart';
+import '../data/reports_repository.dart';
+import 'my_reports_screen.dart';
 
 class ReportScreen extends StatefulWidget {
-  const ReportScreen({super.key});
+  const ReportScreen({
+    super.key,
+    this.repository,
+    this.locationService = const LocationService(),
+  });
+
+  /// Si es null se usa Supabase. Las pruebas inyectan uno falso.
+  final ReportsRepository? repository;
+  final LocationService locationService;
+
+  /// Tamaño máximo de foto aceptado (10 MB).
+  static const int maxPhotoBytes = 10 * 1024 * 1024;
+
+  /// Longitud mínima de la descripción.
+  static const int minDescriptionLength = 10;
 
   @override
   State<ReportScreen> createState() => _ReportScreenState();
 }
 
 class _ReportScreenState extends State<ReportScreen> {
-  final TextEditingController _descriptionController =
-      TextEditingController();
+  final TextEditingController _descriptionController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+
+  late final ReportsRepository _repository =
+      widget.repository ?? SupabaseReportsRepository();
+  final ImagePicker _imagePicker = ImagePicker();
 
   int _currentStep = 0;
   bool _showAsGrid = true;
-  bool _locationEnabled = false;
-  bool _photoSelected = false;
+  bool _isLocating = false;
+  bool _isSubmitting = false;
+
+  GeoPoint? _location;
+  Uint8List? _photoBytes;
+  String _photoExtension = 'jpg';
 
   ReportProblem? _selectedProblem;
   String? _selectedColony;
   String _folio = '';
 
-  final List<String> _colonies = const [
-    'Cuajimalpa Centro',
-    'Santa Fe',
-    'La Mexicana',
-    'Contadero',
-    'Palo Alto',
-    'Bosques de las Lomas',
-    'Zedec Santa Fe',
-    'El Yaqui',
-    'Cuajimalpa de Morelos',
-    'Otro',
-  ];
+  bool get _locationEnabled => _location != null;
+  bool get _photoSelected => _photoBytes != null;
 
   final List<ReportProblem> _problems = const [
     ReportProblem(
@@ -107,9 +125,10 @@ class _ReportScreenState extends State<ReportScreen> {
         return _selectedProblem != null;
       case 1:
         return _selectedColony != null &&
-            _descriptionController.text.trim().length >= 10;
+            _descriptionController.text.trim().length >=
+                ReportScreen.minDescriptionLength;
       case 2:
-        return true;
+        return !_isSubmitting;
       default:
         return false;
     }
@@ -132,6 +151,10 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   void _handleBack() {
+    if (_isSubmitting) {
+      return;
+    }
+
     if (_currentStep == 0) {
       Navigator.pop(context);
       return;
@@ -163,9 +186,7 @@ class _ReportScreenState extends State<ReportScreen> {
               onPressed: () {
                 Navigator.pop(dialogContext, true);
               },
-              style: FilledButton.styleFrom(
-                backgroundColor: Colors.red,
-              ),
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
               child: const Text('Cancelar reporte'),
             ),
           ],
@@ -178,16 +199,14 @@ class _ReportScreenState extends State<ReportScreen> {
     }
   }
 
-  void _continueReport() {
+  Future<void> _continueReport() async {
     if (!_canContinue) {
       if (_currentStep == 0) {
         _showMessage('Selecciona un tipo de problema.');
       } else if (_selectedColony == null) {
         _showMessage('Selecciona la colonia o zona.');
       } else {
-        _showMessage(
-          'La descripción debe tener al menos 10 caracteres.',
-        );
+        _showMessage('La descripción debe tener al menos 10 caracteres.');
       }
       return;
     }
@@ -197,28 +216,75 @@ class _ReportScreenState extends State<ReportScreen> {
       return;
     }
 
-    final int folioNumber =
-        DateTime.now().millisecondsSinceEpoch.remainder(10000);
-
-    setState(() {
-      _folio =
-          'ECO-${DateTime.now().year}-${folioNumber.toString().padLeft(4, '0')}';
-      _currentStep = 3;
-    });
+    await _submitReport();
   }
 
-  void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: AppColors.darkGreen,
-      ),
-    );
+  Future<void> _submitReport() async {
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    try {
+      final Report report = await _repository.submit(
+        NewReport(
+          category: _selectedProblem!.title,
+          colony: _selectedColony!,
+          description: _descriptionController.text,
+          latitude: _location?.latitude,
+          longitude: _location?.longitude,
+          photoBytes: _photoBytes,
+          photoExtension: _photoExtension,
+        ),
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _folio = report.folio;
+        _currentStep = 3;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      _showMessage(
+        'No se pudo enviar el reporte. Revisa tu conexión e inténtalo de nuevo.',
+        isError: true,
+      );
+      debugPrint('Error al enviar reporte: $error');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
+    }
+  }
+
+  void _showMessage(String message, {bool isError = false}) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: isError ? Colors.red : AppColors.darkGreen,
+        ),
+      );
   }
 
   Future<void> _handleLocationButton() async {
+    if (_isLocating) {
+      return;
+    }
+
     if (_locationEnabled) {
-      _showMessage('La ubicación ya está activada.');
+      setState(() {
+        _location = null;
+      });
+      _showMessage('Ubicación quitada del reporte.');
       return;
     }
 
@@ -260,9 +326,7 @@ class _ReportScreenState extends State<ReportScreen> {
               },
               child: const Text(
                 'Ahora no',
-                style: TextStyle(
-                  color: AppColors.textSecondary,
-                ),
+                style: TextStyle(color: AppColors.textSecondary),
               ),
             ),
             FilledButton.icon(
@@ -280,27 +344,133 @@ class _ReportScreenState extends State<ReportScreen> {
       },
     );
 
-    if (shouldEnable == true && mounted) {
-      setState(() {
-        _locationEnabled = true;
-      });
+    if (shouldEnable != true || !mounted) {
+      return;
+    }
 
-      _showMessage(
-        'Ubicación activada de forma visual. Después conectaremos el GPS real.',
-      );
+    setState(() {
+      _isLocating = true;
+    });
+
+    try {
+      final GeoPoint location = await widget.locationService
+          .getCurrentLocation();
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _location = location;
+      });
+      _showMessage('Ubicación agregada al reporte.');
+    } on LocationException catch (error) {
+      if (mounted) {
+        _showMessage(error.message, isError: true);
+      }
+    } catch (_) {
+      if (mounted) {
+        _showMessage(
+          'No pudimos obtener tu ubicación. Inténtalo de nuevo.',
+          isError: true,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLocating = false;
+        });
+      }
     }
   }
 
-  void _togglePhoto() {
-    setState(() {
-      _photoSelected = !_photoSelected;
-    });
-
-    _showMessage(
-      _photoSelected
-          ? 'Foto agregada de forma visual.'
-          : 'Foto eliminada del reporte.',
+  Future<void> _choosePhoto() async {
+    final String? action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.camera_alt_outlined),
+                title: const Text('Tomar foto'),
+                onTap: () => Navigator.pop(sheetContext, 'camera'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Elegir de la galería'),
+                onTap: () => Navigator.pop(sheetContext, 'gallery'),
+              ),
+              if (_photoSelected)
+                ListTile(
+                  leading: const Icon(
+                    Icons.delete_outline_rounded,
+                    color: Colors.red,
+                  ),
+                  title: const Text(
+                    'Quitar foto',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                  onTap: () => Navigator.pop(sheetContext, 'remove'),
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
     );
+
+    if (action == null || !mounted) {
+      return;
+    }
+
+    if (action == 'remove') {
+      setState(() {
+        _photoBytes = null;
+      });
+      _showMessage('Foto eliminada del reporte.');
+      return;
+    }
+
+    try {
+      final XFile? file = await _imagePicker.pickImage(
+        source: action == 'camera' ? ImageSource.camera : ImageSource.gallery,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 80,
+      );
+
+      if (file == null) {
+        return;
+      }
+
+      final Uint8List bytes = await file.readAsBytes();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (bytes.length > ReportScreen.maxPhotoBytes) {
+        _showMessage('La foto supera los 10 MB.', isError: true);
+        return;
+      }
+
+      setState(() {
+        _photoBytes = bytes;
+        _photoExtension = file.name.toLowerCase().endsWith('.png')
+            ? 'png'
+            : 'jpg';
+      });
+    } catch (_) {
+      if (mounted) {
+        _showMessage(
+          'No se pudo abrir la cámara o la galería. Revisa los permisos.',
+          isError: true,
+        );
+      }
+    }
   }
 
   @override
@@ -309,6 +479,18 @@ class _ReportScreenState extends State<ReportScreen> {
       return _buildSuccessScreen();
     }
 
+    return PopScope(
+      canPop: _currentStep == 0 && !_isSubmitting,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          _handleBack();
+        }
+      },
+      child: _buildForm(),
+    );
+  }
+
+  Widget _buildForm() {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
@@ -316,9 +498,7 @@ class _ReportScreenState extends State<ReportScreen> {
           controller: _scrollController,
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            SliverToBoxAdapter(
-              child: _buildHeader(),
-            ),
+            SliverToBoxAdapter(child: _buildHeader()),
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(18, 20, 18, 28),
               sliver: SliverToBoxAdapter(
@@ -398,9 +578,7 @@ class _ReportScreenState extends State<ReportScreen> {
               return Expanded(
                 child: Container(
                   height: 4,
-                  margin: EdgeInsets.only(
-                    right: index == 2 ? 0 : 8,
-                  ),
+                  margin: EdgeInsets.only(right: index == 2 ? 0 : 8),
                   decoration: BoxDecoration(
                     color: completed
                         ? AppColors.primaryGreen
@@ -432,10 +610,7 @@ class _ReportScreenState extends State<ReportScreen> {
         const SizedBox(height: 5),
         const Text(
           'Selecciona la opción que mejor describe la situación',
-          style: TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-          ),
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
         ),
         const SizedBox(height: 22),
         Row(
@@ -443,20 +618,14 @@ class _ReportScreenState extends State<ReportScreen> {
             const Expanded(
               child: Text(
                 'Forma de visualización',
-                style: TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 12,
-                ),
+                style: TextStyle(color: AppColors.textPrimary, fontSize: 12),
               ),
             ),
             _buildViewToggle(),
           ],
         ),
         const SizedBox(height: 15),
-        if (_showAsGrid)
-          _buildProblemGrid()
-        else
-          _buildProblemList(),
+        if (_showAsGrid) _buildProblemGrid() else _buildProblemList(),
       ],
     );
   }
@@ -467,9 +636,7 @@ class _ReportScreenState extends State<ReportScreen> {
       decoration: BoxDecoration(
         color: const Color(0xFFF0F4F2),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: AppColors.border,
-        ),
+        border: Border.all(color: AppColors.border),
       ),
       child: Row(
         children: [
@@ -550,9 +717,7 @@ class _ReportScreenState extends State<ReportScreen> {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(17),
             border: Border.all(
-              color: selected
-                  ? problem.iconColor
-                  : problem.borderColor,
+              color: selected ? problem.iconColor : problem.borderColor,
               width: selected ? 2 : 1.2,
             ),
           ),
@@ -618,9 +783,7 @@ class _ReportScreenState extends State<ReportScreen> {
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(17),
                   border: Border.all(
-                    color: selected
-                        ? problem.iconColor
-                        : problem.borderColor,
+                    color: selected ? problem.iconColor : problem.borderColor,
                     width: selected ? 2 : 1.2,
                   ),
                 ),
@@ -661,21 +824,16 @@ class _ReportScreenState extends State<ReportScreen> {
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.85),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: AppColors.border,
-        ),
+        border: Border.all(color: AppColors.border),
       ),
-      child: Icon(
-        problem.icon,
-        color: problem.iconColor,
-        size: 21,
-      ),
+      child: Icon(problem.icon, color: problem.iconColor, size: 21),
     );
   }
 
   Widget _buildStepTwo() {
     final bool descriptionIsValid =
-        _descriptionController.text.trim().length >= 10;
+        _descriptionController.text.trim().length >=
+        ReportScreen.minDescriptionLength;
 
     return Column(
       key: const ValueKey('step-two'),
@@ -692,10 +850,7 @@ class _ReportScreenState extends State<ReportScreen> {
         const SizedBox(height: 5),
         const Text(
           'Indica la ubicación y describe el problema',
-          style: TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-          ),
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
         ),
         const SizedBox(height: 22),
         const Text(
@@ -710,7 +865,7 @@ class _ReportScreenState extends State<ReportScreen> {
         Wrap(
           spacing: 8,
           runSpacing: 8,
-          children: _colonies.map((colony) {
+          children: cuajimalpaColonies.map((colony) {
             final bool selected = _selectedColony == colony;
 
             return ChoiceChip(
@@ -719,17 +874,12 @@ class _ReportScreenState extends State<ReportScreen> {
               selectedColor: AppColors.primaryGreen,
               backgroundColor: Colors.white,
               side: BorderSide(
-                color: selected
-                    ? AppColors.primaryGreen
-                    : AppColors.border,
+                color: selected ? AppColors.primaryGreen : AppColors.border,
               ),
               labelStyle: TextStyle(
-                color: selected
-                    ? Colors.white
-                    : AppColors.textSecondary,
+                color: selected ? Colors.white : AppColors.textSecondary,
                 fontSize: 11,
-                fontWeight:
-                    selected ? FontWeight.w600 : FontWeight.normal,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
               ),
               onSelected: (_) {
                 setState(() {
@@ -777,21 +927,15 @@ class _ReportScreenState extends State<ReportScreen> {
             ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(
-                color: AppColors.border,
-              ),
+              borderSide: const BorderSide(color: AppColors.border),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(
-                color: AppColors.border,
-              ),
+              borderSide: const BorderSide(color: AppColors.border),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(
-                color: AppColors.primaryGreen,
-              ),
+              borderSide: const BorderSide(color: AppColors.primaryGreen),
             ),
           ),
         ),
@@ -812,14 +956,10 @@ class _ReportScreenState extends State<ReportScreen> {
           width: double.infinity,
           padding: const EdgeInsets.all(13),
           decoration: BoxDecoration(
-            color: active
-                ? const Color(0xFFE9FFF5)
-                : const Color(0xFFF0F2F1),
+            color: active ? const Color(0xFFE9FFF5) : const Color(0xFFF0F2F1),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: active
-                  ? const Color(0xFF62DFA0)
-                  : const Color(0xFFD0D6D3),
+              color: active ? const Color(0xFF62DFA0) : const Color(0xFFD0D6D3),
             ),
           ),
           child: Row(
@@ -834,13 +974,21 @@ class _ReportScreenState extends State<ReportScreen> {
                       : const Color(0xFF9AA4A0),
                   borderRadius: BorderRadius.circular(13),
                 ),
-                child: Icon(
-                  active
-                      ? Icons.location_on_outlined
-                      : Icons.location_off_outlined,
-                  color: Colors.white,
-                  size: 25,
-                ),
+                child: _isLocating
+                    ? const Padding(
+                        padding: EdgeInsets.all(11),
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2.5,
+                        ),
+                      )
+                    : Icon(
+                        active
+                            ? Icons.location_on_outlined
+                            : Icons.location_off_outlined,
+                        color: Colors.white,
+                        size: 25,
+                      ),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -848,9 +996,11 @@ class _ReportScreenState extends State<ReportScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      active
-                          ? 'Usar mi ubicación actual'
-                          : 'Ubicación desactivada',
+                      _isLocating
+                          ? 'Obteniendo ubicación...'
+                          : active
+                          ? 'Ubicación agregada'
+                          : 'Agregar mi ubicación (opcional)',
                       style: TextStyle(
                         color: active
                             ? AppColors.primaryGreen
@@ -862,8 +1012,10 @@ class _ReportScreenState extends State<ReportScreen> {
                     const SizedBox(height: 3),
                     Text(
                       active
-                          ? 'Ubicación disponible para detectar tu colonia'
-                          : 'Toca para activar la ubicación del dispositivo',
+                          ? '${_location!.latitude.toStringAsFixed(5)}, '
+                                '${_location!.longitude.toStringAsFixed(5)} · '
+                                'toca para quitarla'
+                          : 'Ayuda a ubicar el problema con precisión',
                       style: const TextStyle(
                         color: AppColors.textSecondary,
                         fontSize: 10.5,
@@ -903,14 +1055,11 @@ class _ReportScreenState extends State<ReportScreen> {
         const SizedBox(height: 5),
         const Text(
           'Una imagen ayuda a que tu reporte sea atendido más rápido',
-          style: TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-          ),
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
         ),
         const SizedBox(height: 18),
         GestureDetector(
-          onTap: _togglePhoto,
+          onTap: _isSubmitting ? null : _choosePhoto,
           child: CustomPaint(
             painter: _DashedRoundedBorderPainter(
               color: _photoSelected
@@ -920,10 +1069,7 @@ class _ReportScreenState extends State<ReportScreen> {
             ),
             child: Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 22,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
               decoration: BoxDecoration(
                 color: _photoSelected
                     ? const Color(0xFFE9FFF5)
@@ -932,24 +1078,31 @@ class _ReportScreenState extends State<ReportScreen> {
               ),
               child: Column(
                 children: [
-                  Container(
-                    width: 52,
-                    height: 52,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: AppColors.border,
+                  if (_photoSelected)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(13),
+                      child: Image.memory(
+                        _photoBytes!,
+                        height: 150,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
+                    )
+                  else
+                    Container(
+                      width: 52,
+                      height: 52,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: const Icon(
+                        Icons.camera_alt_outlined,
+                        color: AppColors.primaryGreen,
+                        size: 28,
                       ),
                     ),
-                    child: Icon(
-                      _photoSelected
-                          ? Icons.check_rounded
-                          : Icons.camera_alt_outlined,
-                      color: AppColors.primaryGreen,
-                      size: 28,
-                    ),
-                  ),
                   const SizedBox(height: 12),
                   Text(
                     _photoSelected
@@ -964,7 +1117,7 @@ class _ReportScreenState extends State<ReportScreen> {
                   const SizedBox(height: 4),
                   Text(
                     _photoSelected
-                        ? 'Toca nuevamente para quitarla'
+                        ? 'Toca para cambiarla o quitarla'
                         : 'JPG, PNG hasta 10 MB',
                     style: const TextStyle(
                       color: AppColors.textSecondary,
@@ -1002,19 +1155,14 @@ class _ReportScreenState extends State<ReportScreen> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(17),
-        border: Border.all(
-          color: AppColors.border,
-        ),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
             'Resumen del reporte',
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 13,
-            ),
+            style: TextStyle(color: AppColors.textPrimary, fontSize: 13),
           ),
           const SizedBox(height: 14),
           _summaryRow(
@@ -1022,9 +1170,16 @@ class _ReportScreenState extends State<ReportScreen> {
             value: _selectedProblem?.title ?? '-',
           ),
           const SizedBox(height: 12),
+          _summaryRow(label: 'Ubicación:', value: _selectedColony ?? '-'),
+          const SizedBox(height: 12),
           _summaryRow(
-            label: 'Ubicación:',
-            value: _selectedColony ?? '-',
+            label: 'GPS:',
+            value: _locationEnabled ? 'Incluido' : 'No incluido',
+          ),
+          const SizedBox(height: 12),
+          _summaryRow(
+            label: 'Foto:',
+            value: _photoSelected ? 'Incluida' : 'Sin foto',
           ),
           const SizedBox(height: 12),
           _summaryRow(
@@ -1036,10 +1191,7 @@ class _ReportScreenState extends State<ReportScreen> {
     );
   }
 
-  Widget _summaryRow({
-    required String label,
-    required String value,
-  }) {
+  Widget _summaryRow({required String label, required String value}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1068,18 +1220,15 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   Widget _buildBottomActions() {
-    final String primaryText =
-        _currentStep == 2 ? 'Enviar reporte' : 'Continuar';
+    final String primaryText = _currentStep == 2
+        ? 'Enviar reporte'
+        : 'Continuar';
 
     return Container(
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
       decoration: const BoxDecoration(
         color: Colors.white,
-        border: Border(
-          top: BorderSide(
-            color: AppColors.border,
-          ),
-        ),
+        border: Border(top: BorderSide(color: AppColors.border)),
       ),
       child: SafeArea(
         top: false,
@@ -1087,12 +1236,10 @@ class _ReportScreenState extends State<ReportScreen> {
           children: [
             Expanded(
               child: OutlinedButton(
-                onPressed: _cancelReport,
+                onPressed: _isSubmitting ? null : _cancelReport,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Colors.red,
-                  side: const BorderSide(
-                    color: Color(0xFFFFB7BC),
-                  ),
+                  side: const BorderSide(color: Color(0xFFFFB7BC)),
                   minimumSize: const Size.fromHeight(52),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(15),
@@ -1100,9 +1247,7 @@ class _ReportScreenState extends State<ReportScreen> {
                 ),
                 child: const Text(
                   'Cancelar',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
             ),
@@ -1118,12 +1263,19 @@ class _ReportScreenState extends State<ReportScreen> {
                     borderRadius: BorderRadius.circular(15),
                   ),
                 ),
-                child: Text(
-                  primaryText,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                child: _isSubmitting
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2.5,
+                        ),
+                      )
+                    : Text(
+                        primaryText,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
               ),
             ),
           ],
@@ -1146,9 +1298,7 @@ class _ReportScreenState extends State<ReportScreen> {
                 decoration: BoxDecoration(
                   color: const Color(0xFFE9FFF5),
                   shape: BoxShape.circle,
-                  border: Border.all(
-                    color: const Color(0xFF62DFA0),
-                  ),
+                  border: Border.all(color: const Color(0xFF62DFA0)),
                 ),
                 child: const Icon(
                   Icons.check_rounded,
@@ -1184,9 +1334,7 @@ class _ReportScreenState extends State<ReportScreen> {
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(17),
-                  border: Border.all(
-                    color: AppColors.border,
-                  ),
+                  border: Border.all(color: AppColors.border),
                 ),
                 child: Column(
                   children: [
@@ -1205,7 +1353,7 @@ class _ReportScreenState extends State<ReportScreen> {
                     _successRow(
                       icon: Icons.check_circle_outline_rounded,
                       label: 'Estado',
-                      value: 'En proceso · Folio #$_folio',
+                      value: 'Pendiente · Folio #$_folio',
                       valueColor: AppColors.primaryGreen,
                     ),
                   ],
@@ -1216,8 +1364,11 @@ class _ReportScreenState extends State<ReportScreen> {
                 width: double.infinity,
                 child: FilledButton(
                   onPressed: () {
-                    _showMessage(
-                      'El perfil se conectará en el siguiente paso.',
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute<void>(
+                        builder: (context) => const MyReportsScreen(),
+                      ),
                     );
                   },
                   style: FilledButton.styleFrom(
@@ -1228,10 +1379,8 @@ class _ReportScreenState extends State<ReportScreen> {
                     ),
                   ),
                   child: const Text(
-                    'Ver en mi perfil',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                    ),
+                    'Ver mis reportes',
+                    style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),
               ),
@@ -1244,9 +1393,7 @@ class _ReportScreenState extends State<ReportScreen> {
                   },
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.textPrimary,
-                    side: const BorderSide(
-                      color: AppColors.border,
-                    ),
+                    side: const BorderSide(color: AppColors.border),
                     minimumSize: const Size.fromHeight(52),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(15),
@@ -1254,9 +1401,7 @@ class _ReportScreenState extends State<ReportScreen> {
                   ),
                   child: const Text(
                     'Volver al inicio',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                    ),
+                    style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),
               ),
@@ -1282,11 +1427,7 @@ class _ReportScreenState extends State<ReportScreen> {
             color: const Color(0xFFE9FFF5),
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Icon(
-            icon,
-            color: AppColors.primaryGreen,
-            size: 19,
-          ),
+          child: Icon(icon, color: AppColors.primaryGreen, size: 19),
         ),
         const SizedBox(width: 11),
         Expanded(
@@ -1301,13 +1442,7 @@ class _ReportScreenState extends State<ReportScreen> {
                 ),
               ),
               const SizedBox(height: 2),
-              Text(
-                value,
-                style: TextStyle(
-                  color: valueColor,
-                  fontSize: 12,
-                ),
-              ),
+              Text(value, style: TextStyle(color: valueColor, fontSize: 12)),
             ],
           ),
         ),
@@ -1359,13 +1494,11 @@ class _DashedRoundedBorderPainter extends CustomPainter {
       double distance = 0;
 
       while (distance < metric.length) {
-        final double nextDistance =
-            (distance + 7).clamp(0, metric.length).toDouble();
+        final double nextDistance = (distance + 7)
+            .clamp(0, metric.length)
+            .toDouble();
 
-        canvas.drawPath(
-          metric.extractPath(distance, nextDistance),
-          paint,
-        );
+        canvas.drawPath(metric.extractPath(distance, nextDistance), paint);
 
         distance += 12;
       }
@@ -1373,9 +1506,7 @@ class _DashedRoundedBorderPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(
-    covariant _DashedRoundedBorderPainter oldDelegate,
-  ) {
+  bool shouldRepaint(covariant _DashedRoundedBorderPainter oldDelegate) {
     return oldDelegate.color != color || oldDelegate.radius != radius;
   }
 }

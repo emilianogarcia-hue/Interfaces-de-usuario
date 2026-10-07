@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/theme/app_colors.dart';
-import 'home_screen.dart';
+import '../../../core/utils/validators.dart';
+import 'forgot_password_screen.dart';
 import 'register_screen.dart';
-
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -31,8 +31,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _login() async {
-    final bool formIsValid =
-        _formKey.currentState?.validate() ?? false;
+    final bool formIsValid = _formKey.currentState?.validate() ?? false;
 
     if (!formIsValid) {
       return;
@@ -43,11 +42,11 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final AuthResponse response =
-          await Supabase.instance.client.auth.signInWithPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-      );
+      final AuthResponse response = await Supabase.instance.client.auth
+          .signInWithPassword(
+            email: _emailController.text.trim(),
+            password: _passwordController.text,
+          );
 
       if (!mounted) {
         return;
@@ -57,13 +56,7 @@ class _LoginScreenState extends State<LoginScreen> {
         throw Exception('No se pudo iniciar sesión.');
       }
 
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute<void>(
-          builder: (context) => const HomeScreen(),
-        ),
-        (route) => false,
-      );
+      // AuthGate escucha el cambio de sesión y muestra la app.
     } on AuthException catch (error) {
       if (!mounted) {
         return;
@@ -82,10 +75,7 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text(message), backgroundColor: Colors.red),
       );
     } catch (error) {
       if (!mounted) {
@@ -114,53 +104,31 @@ class _LoginScreenState extends State<LoginScreen> {
   }) {
     return InputDecoration(
       hintText: hintText,
-      hintStyle: const TextStyle(
-        color: AppColors.textSecondary,
-        fontSize: 15,
-      ),
-      prefixIcon: Icon(
-        prefixIcon,
-        color: AppColors.darkGreen,
-        size: 21,
-      ),
+      hintStyle: const TextStyle(color: AppColors.textSecondary, fontSize: 15),
+      prefixIcon: Icon(prefixIcon, color: AppColors.darkGreen, size: 21),
       suffixIcon: suffixIcon,
       filled: true,
       fillColor: AppColors.fieldBackground,
-      contentPadding: const EdgeInsets.symmetric(
-        horizontal: 16,
-        vertical: 18,
-      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(
-          color: AppColors.border,
-        ),
+        borderSide: const BorderSide(color: AppColors.border),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(
-          color: AppColors.border,
-        ),
+        borderSide: const BorderSide(color: AppColors.border),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(
-          color: AppColors.primaryGreen,
-          width: 1.5,
-        ),
+        borderSide: const BorderSide(color: AppColors.primaryGreen, width: 1.5),
       ),
       errorBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(
-          color: Colors.red,
-        ),
+        borderSide: const BorderSide(color: Colors.red),
       ),
       focusedErrorBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(
-          color: Colors.red,
-          width: 1.5,
-        ),
+        borderSide: const BorderSide(color: Colors.red, width: 1.5),
       ),
     );
   }
@@ -171,12 +139,7 @@ class _LoginScreenState extends State<LoginScreen> {
       backgroundColor: AppColors.background,
       body: SafeArea(
         child: SingleChildScrollView(
-          child: Column(
-            children: [
-              _buildHeader(),
-              _buildLoginForm(),
-            ],
-          ),
+          child: Column(children: [_buildHeader(), _buildLoginForm()]),
         ),
       ),
     );
@@ -188,10 +151,7 @@ class _LoginScreenState extends State<LoginScreen> {
       height: 230,
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [
-            AppColors.darkGreen,
-            AppColors.mediumGreen,
-          ],
+          colors: [AppColors.darkGreen, AppColors.mediumGreen],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -205,9 +165,7 @@ class _LoginScreenState extends State<LoginScreen> {
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.18),
               borderRadius: BorderRadius.circular(17),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.25),
-              ),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
             ),
             child: const Icon(
               Icons.eco_outlined,
@@ -227,10 +185,7 @@ class _LoginScreenState extends State<LoginScreen> {
           const SizedBox(height: 5),
           const Text(
             'Inicia sesión para continuar',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 14,
-            ),
+            style: TextStyle(color: Colors.white, fontSize: 14),
           ),
         ],
       ),
@@ -261,57 +216,51 @@ class _LoginScreenState extends State<LoginScreen> {
                 hintText: 'tu@correo.com',
                 prefixIcon: Icons.email_outlined,
               ),
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Ingresa tu correo electrónico';
-                }
-
-                final RegExp emailExpression = RegExp(
-                  r'^[^@\s]+@[^@\s]+\.[^@\s]+$',
-                );
-
-                if (!emailExpression.hasMatch(value.trim())) {
-                  return 'Ingresa un correo válido';
-                }
-
-                return null;
-              },
+              validator: Validators.email,
             ),
             const SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Contraseña',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                TextButton(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text(
-                          'Después crearemos la recuperación de contraseña.',
-                        ),
-                      ),
-                    );
-                  },
-                  style: TextButton.styleFrom(
-                    padding: EdgeInsets.zero,
-                    minimumSize: const Size(0, 30),
-                  ),
-                  child: const Text(
-                    '¿Olvidaste tu contraseña?',
+            SizedBox(
+              width: double.infinity,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Contraseña',
                     style: TextStyle(
-                      color: AppColors.primaryGreen,
-                      fontSize: 13,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: TextButton(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute<void>(
+                            builder: (context) => ForgotPasswordScreen(
+                              initialEmail: _emailController.text.trim(),
+                            ),
+                          ),
+                        );
+                      },
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        minimumSize: const Size(0, 30),
+                      ),
+                      child: const Text(
+                        '¿Olvidaste tu contraseña?',
+                        textAlign: TextAlign.end,
+                        style: TextStyle(
+                          color: AppColors.primaryGreen,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 4),
             TextFormField(
@@ -334,17 +283,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
               ),
-              validator: (value) {
-                if (value == null || value.isEmpty) {
-                  return 'Ingresa tu contraseña';
-                }
-
-                if (value.length < 8) {
-                  return 'La contraseña debe tener al menos 8 caracteres';
-                }
-
-                return null;
-              },
+              validator: Validators.password,
             ),
             const SizedBox(height: 10),
             Row(
@@ -363,10 +302,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const Text(
                   'Recordarme',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: AppColors.textPrimary,
-                  ),
+                  style: TextStyle(fontSize: 14, color: AppColors.textPrimary),
                 ),
               ],
             ),
@@ -378,8 +314,9 @@ class _LoginScreenState extends State<LoginScreen> {
                 onPressed: _isLoading ? null : _login,
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.darkGreen,
-                  disabledBackgroundColor:
-                      AppColors.darkGreen.withValues(alpha: 0.6),
+                  disabledBackgroundColor: AppColors.darkGreen.withValues(
+                    alpha: 0.6,
+                  ),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
                   ),
@@ -405,30 +342,21 @@ class _LoginScreenState extends State<LoginScreen> {
             const SizedBox(height: 30),
             const Row(
               children: [
-                Expanded(
-                  child: Divider(
-                    color: AppColors.border,
-                  ),
-                ),
+                Expanded(child: Divider(color: AppColors.border)),
                 Padding(
                   padding: EdgeInsets.symmetric(horizontal: 14),
                   child: Text(
                     'o',
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                    ),
+                    style: TextStyle(color: AppColors.textSecondary),
                   ),
                 ),
-                Expanded(
-                  child: Divider(
-                    color: AppColors.border,
-                  ),
-                ),
+                Expanded(child: Divider(color: AppColors.border)),
               ],
             ),
             const SizedBox(height: 25),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            Wrap(
+              alignment: WrapAlignment.center,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 const Text(
                   '¿No tienes una cuenta? ',
