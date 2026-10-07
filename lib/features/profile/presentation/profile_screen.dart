@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 
-import '../../../core/data/colonies.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/formatters.dart';
-import '../../../core/utils/validators.dart';
 import '../../../core/widgets/app_bottom_nav.dart';
+import '../../../core/widgets/user_avatar.dart';
+import '../../notifications/presentation/notifications_screen.dart';
 import '../../reports/presentation/my_reports_screen.dart';
 import '../../shell/main_shell.dart';
 import '../data/profile_repository.dart';
+import 'edit_profile_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key, this.repository});
@@ -88,14 +89,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
 
-    final bool? saved = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      showDragHandle: true,
-      backgroundColor: Colors.white,
-      builder: (sheetContext) =>
-          _EditProfileSheet(profile: profile, repository: _repository),
+    final bool? saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute<bool>(
+        builder: (context) =>
+            EditProfileScreen(profile: profile, repository: _repository),
+      ),
     );
 
     if (saved == true && mounted) {
@@ -141,6 +140,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     Navigator.of(context).popUntil((route) => route.isFirst);
     await _repository.signOut();
+  }
+
+  void _openNotifications() {
+    final MainShellScope? shell = MainShellScope.maybeOf(context);
+
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (routeContext) => NotificationsScreen(
+          onOpenCampaigns: shell == null
+              ? null
+              : () {
+                  Navigator.of(routeContext).popUntil((route) => route.isFirst);
+                  shell.selectTab(AppTab.campanas);
+                },
+        ),
+      ),
+    );
   }
 
   void _openMyReports() {
@@ -224,9 +241,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         )?.selectTab(AppTab.campanas),
                       ),
                       _buildOption(
+                        icon: Icons.notifications_none_rounded,
+                        title: 'Notificaciones',
+                        subtitle: 'Avisos de tus reportes y campañas',
+                        onTap: _openNotifications,
+                      ),
+                      _buildOption(
                         icon: Icons.edit_outlined,
                         title: 'Editar perfil',
-                        subtitle: 'Cambia tu nombre o tu colonia',
+                        subtitle: 'Foto, datos, avisos, correo y contraseña',
                         onTap: _editProfile,
                       ),
                       _buildOption(
@@ -260,16 +283,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ),
       child: Column(
         children: [
-          CircleAvatar(
-            radius: 36,
-            backgroundColor: Colors.white.withValues(alpha: 0.2),
-            child: Text(
-              profile.initials,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
+          GestureDetector(
+            onTap: _editProfile,
+            child: UserAvatar(
+              initials: profile.initials,
+              imageUrl: profile.avatarUrl,
             ),
           ),
           const SizedBox(height: 10),
@@ -287,6 +305,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
             profile.colony ?? 'Colonia sin definir',
             style: const TextStyle(color: Colors.white, fontSize: 12.5),
           ),
+          if (profile.bio != null && profile.bio!.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              profile.bio!,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.9),
+                fontSize: 12,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
           const SizedBox(height: 16),
           Row(
             children: [
@@ -400,139 +430,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ],
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _EditProfileSheet extends StatefulWidget {
-  const _EditProfileSheet({required this.profile, required this.repository});
-
-  final UserProfile profile;
-  final ProfileRepository repository;
-
-  @override
-  State<_EditProfileSheet> createState() => _EditProfileSheetState();
-}
-
-class _EditProfileSheetState extends State<_EditProfileSheet> {
-  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  late final TextEditingController _nameController = TextEditingController(
-    text: widget.profile.fullName,
-  );
-  late String? _colony = cuajimalpaColonies.contains(widget.profile.colony)
-      ? widget.profile.colony
-      : null;
-  bool _isSaving = false;
-  String? _error;
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    if (!(_formKey.currentState?.validate() ?? false)) {
-      return;
-    }
-
-    setState(() {
-      _isSaving = true;
-      _error = null;
-    });
-
-    try {
-      await widget.repository.update(
-        fullName: _nameController.text,
-        colony: _colony!,
-      );
-
-      if (mounted) {
-        Navigator.pop(context, true);
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _isSaving = false;
-          _error = 'No se pudieron guardar los cambios.';
-        });
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.fromLTRB(
-        20,
-        0,
-        20,
-        20 + MediaQuery.viewInsetsOf(context).bottom,
-      ),
-      child: Form(
-        key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              'Editar perfil',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-            TextFormField(
-              controller: _nameController,
-              textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Nombre completo',
-                border: OutlineInputBorder(),
-              ),
-              validator: Validators.fullName,
-            ),
-            const SizedBox(height: 14),
-            DropdownButtonFormField<String>(
-              initialValue: _colony,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: 'Colonia',
-                border: OutlineInputBorder(),
-              ),
-              items: cuajimalpaColonies
-                  .map(
-                    (colony) => DropdownMenuItem<String>(
-                      value: colony,
-                      child: Text(colony),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (value) => setState(() => _colony = value),
-              validator: Validators.colony,
-            ),
-            if (_error != null) ...[
-              const SizedBox(height: 10),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
-            ],
-            const SizedBox(height: 18),
-            FilledButton(
-              onPressed: _isSaving ? null : _save,
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.darkGreen,
-                minimumSize: const Size.fromHeight(50),
-              ),
-              child: _isSaving
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2,
-                      ),
-                    )
-                  : const Text('Guardar cambios'),
-            ),
-          ],
         ),
       ),
     );

@@ -5,6 +5,8 @@ import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/app_bottom_nav.dart';
 import '../../campaigns/data/campaign.dart';
 import '../../campaigns/data/campaigns_repository.dart';
+import '../../notifications/data/notifications_repository.dart';
+import '../../notifications/presentation/notifications_screen.dart';
 import '../../profile/data/profile_repository.dart';
 import '../../reports/data/report.dart';
 import '../../reports/data/reports_repository.dart';
@@ -17,11 +19,13 @@ class HomeScreen extends StatefulWidget {
     this.profileRepository,
     this.reportsRepository,
     this.campaignsRepository,
+    this.notificationsRepository,
   });
 
   final ProfileRepository? profileRepository;
   final ReportsRepository? reportsRepository;
   final CampaignsRepository? campaignsRepository;
+  final NotificationsRepository? notificationsRepository;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -34,6 +38,11 @@ class _HomeScreenState extends State<HomeScreen> {
       widget.reportsRepository ?? SupabaseReportsRepository();
   late final CampaignsRepository _campaignsRepository =
       widget.campaignsRepository ?? SupabaseCampaignsRepository();
+  late final NotificationsRepository _notificationsRepository =
+      widget.notificationsRepository ?? SupabaseNotificationsRepository();
+  late final Stream<int> _unreadCount = _notificationsRepository
+      .unreadCount()
+      .handleError((Object _) {});
 
   bool _isLoadingProfile = true;
 
@@ -136,6 +145,25 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _openTab(AppTab tab) {
     MainShellScope.maybeOf(context)?.selectTab(tab);
+  }
+
+  void _openNotifications() {
+    final MainShellScope? shell = MainShellScope.maybeOf(context);
+
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (routeContext) => NotificationsScreen(
+          repository: _notificationsRepository,
+          onOpenCampaigns: shell == null
+              ? null
+              : () {
+                  Navigator.of(routeContext).popUntil((route) => route.isFirst);
+                  shell.selectTab(AppTab.campanas);
+                },
+        ),
+      ),
+    );
   }
 
   void _openMyReports() {
@@ -249,7 +277,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     color: Colors.white.withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(18),
                     child: InkWell(
-                      onTap: _openMyReports,
+                      onTap: _openNotifications,
                       borderRadius: BorderRadius.circular(18),
                       child: const SizedBox(
                         width: 46,
@@ -259,6 +287,24 @@ class _HomeScreenState extends State<HomeScreen> {
                           color: Colors.white,
                           size: 26,
                         ),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 2,
+                    right: 2,
+                    child: IgnorePointer(
+                      child: StreamBuilder<int>(
+                        stream: _unreadCount,
+                        builder: (context, snapshot) {
+                          final int count = snapshot.data ?? 0;
+
+                          if (count == 0) {
+                            return const SizedBox.shrink();
+                          }
+
+                          return _UnreadBadge(count: count);
+                        },
                       ),
                     ),
                   ),
@@ -746,6 +792,35 @@ class _HeaderLoading extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _UnreadBadge extends StatelessWidget {
+  const _UnreadBadge({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 18),
+      height: 18,
+      padding: const EdgeInsets.symmetric(horizontal: 5),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFC857),
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: Colors.white, width: 1.5),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        count > 9 ? '9+' : '$count',
+        style: const TextStyle(
+          color: AppColors.textPrimary,
+          fontSize: 9.5,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
     );
   }
 }

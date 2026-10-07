@@ -69,4 +69,49 @@ class Validators {
 
     return null;
   }
+
+  static const int maxBioLength = 160;
+
+  /// Teléfono opcional de 10 dígitos; acepta espacios, guiones y +52.
+  static String? optionalPhone(String? value) {
+    final String text = value?.trim() ?? '';
+
+    if (text.isEmpty) {
+      return null;
+    }
+
+    String digits = text.replaceAll(RegExp(r'[\s\-().]'), '');
+
+    if (digits.startsWith('+52')) {
+      digits = digits.substring(3);
+    }
+
+    if (!RegExp(r'^\d{10}$').hasMatch(digits)) {
+      return 'Ingresa un teléfono de 10 dígitos';
+    }
+
+    return null;
+  }
+
+  static String? bio(String? value) {
+    if ((value?.trim().length ?? 0) > maxBioLength) {
+      return 'Máximo $maxBioLength caracteres';
+    }
+
+    return null;
+  }
+
+  static String? newEmail(String? value, String currentEmail) {
+    final String? error = email(value);
+
+    if (error != null) {
+      return error;
+    }
+
+    if (value!.trim().toLowerCase() == currentEmail.trim().toLowerCase()) {
+      return 'Es el mismo correo que ya usas';
+    }
+
+    return null;
+  }
 }
