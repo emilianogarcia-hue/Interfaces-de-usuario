@@ -1,0 +1,946 @@
+// Casos de la matriz v2: Centros de reciclaje (REC) y Editar perfil (PER).
+// Servidor, GPS, cámara y url_launcher simulados. No es parte del repo.
+import 'dart:io';
+
+import 'package:ecocuajimalpa/features/auth/presentation/login_screen.dart';
+import 'package:ecocuajimalpa/features/profile/data/profile_repository.dart';
+import 'package:ecocuajimalpa/features/profile/presentation/edit_profile_screen.dart';
+import 'package:ecocuajimalpa/features/profile/presentation/profile_screen.dart';
+import 'package:ecocuajimalpa/features/recycling/presentation/recycling_centers_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator_platform_interface/geolocator_platform_interface.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:plugin_platform_interface/plugin_platform_interface.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart';
+
+import '../helpers.dart';
+import 'dispositivo_test.dart' show FakeImagePicker, photo;
+import 'shots_test.dart' show loadFonts, theme, phone, ana;
+import 'supabase_test.dart' show json, network, FakeLauncher;
+
+Future<void> shot(String id) async {
+  await expectLater(find.byType(MaterialApp), matchesGoldenFile('out2/$id.png'));
+}
+
+http.Response Function(http.Request request) server = (_) =>
+    http.Response('{}', 200);
+
+Map<String, dynamic> center(
+  int id,
+  String name,
+  String address,
+  String colony,
+  double lat,
+  double lng,
+  String phone,
+  String hours,
+  bool open,
+  double rating,
+  List<String> materials,
+) => <String, dynamic>{
+  'id': id,
+  'slug': 'c$id',
+  'name': name,
+  'address': address,
+  'colony': colony,
+  'latitude': lat,
+  'longitude': lng,
+  'phone': phone,
+  'opening_hours': hours,
+  'open_now': open,
+  'rating': rating,
+  'recycling_center_materials': materials
+      .map(
+        (m) => <String, dynamic>{
+          'recycling_materials': <String, dynamic>{'name': m},
+        },
+      )
+      .toList(),
+};
+
+// Ordenados por nombre, como los devuelve Supabase (.order('name')).
+final List<Map<String, dynamic>> centersData = <Map<String, dynamic>>[
+  center(4, 'Acopio San Mateo', 'Calle Hidalgo 15', 'San Mateo Tlaltenango',
+      19.3330, -99.2930, '55 4444 5555', 'Mar-Sáb 10:00-19:00', false, 4.9,
+      <String>['Cartón', 'Vidrio']),
+  center(2, 'Centro de Acopio Santa Fe', 'Vasco de Quiroga 3800', 'Santa Fe',
+      19.3590, -99.2600, '55 8765 4321', 'Lun-Vie 09:00-17:00', false, 4.2,
+      <String>['Cartón', 'Papel']),
+  center(1, 'Punto Limpio Contadero', 'Av. Contadero 120', 'Contadero',
+      19.3609, -99.2851, '55 1234 5678', 'Lun-Sáb 08:00-18:00', true, 4.6,
+      <String>['PET', 'Vidrio']),
+  center(3, 'Reciclaje El Yaqui', 'Camino Real 45', 'El Yaqui', 19.3480,
+      -99.3010, '55 2222 3333', 'Lun-Dom 07:00-15:00', true, 3.8,
+      <String>['Aluminio', 'PET']),
+];
+
+const String sanMateo = 'Acopio San Mateo';
+const String santaFe = 'Centro de Acopio Santa Fe';
+const String contadero = 'Punto Limpio Contadero';
+const String yaqui = 'Reciclaje El Yaqui';
+const List<String> allNames = <String>[sanMateo, santaFe, contadero, yaqui];
+
+/// GPS simulado: [answers] son las respuestas al pedir permiso, en orden.
+class Geo extends GeolocatorPlatform with MockPlatformInterfaceMixin {
+  Geo(this.answers);
+
+  final List<LocationPermission> answers;
+  int requests = 0;
+
+  @override
+  Future<bool> isLocationServiceEnabled() async => true;
+
+  @override
+  Future<LocationPermission> checkPermission() async =>
+      requests == 0 ? LocationPermission.denied : _last;
+
+  LocationPermission _last = LocationPermission.denied;
+
+  @override
+  Future<LocationPermission> requestPermission() async {
+    final LocationPermission answer =
+        answers[requests < answers.length ? requests : answers.length - 1];
+    requests++;
+    _last = answer;
+    return answer;
+  }
+
+  @override
+  Future<Position> getCurrentPosition({
+    LocationSettings? locationSettings,
+  }) async => Position(
+    latitude: 19.3653,
+    longitude: -99.2900,
+    timestamp: DateTime(2026, 10, 7),
+    accuracy: 5,
+    altitude: 0,
+    altitudeAccuracy: 0,
+    heading: 0,
+    headingAccuracy: 0,
+    speed: 0,
+    speedAccuracy: 0,
+  );
+}
+
+final Geo denied = Geo(<LocationPermission>[LocationPermission.denied]);
+
+Future<void> openCenters(
+  WidgetTester tester, {
+  Geo? geo,
+  double height = 3400,
+}) async {
+  GeolocatorPlatform.instance =
+      geo ?? Geo(<LocationPermission>[LocationPermission.denied]);
+  server = (request) => request.url.path.endsWith('/recycling_centers')
+      ? json(centersData)
+      : json(<String, dynamic>{});
+  phone(tester, height: height);
+  await tester.pumpWidget(
+    MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      home: const RecyclingCentersScreen(),
+    ),
+  );
+  await network(tester);
+}
+
+/// Nombres de centros visibles, de arriba hacia abajo.
+List<String> order(WidgetTester tester) {
+  final List<String> visible = allNames
+      .where((n) => find.text(n).evaluate().isNotEmpty)
+      .toList();
+  visible.sort(
+    (a, b) => tester
+        .getTopLeft(find.text(a).first)
+        .dy
+        .compareTo(tester.getTopLeft(find.text(b).first).dy),
+  );
+  return visible;
+}
+
+Future<void> typeSearch(WidgetTester tester, String text) async {
+  await tester.enterText(find.byType(TextField).first, text);
+  await tester.pumpAndSettle();
+  FocusManager.instance.primaryFocus?.unfocus();
+  await tester.pumpAndSettle();
+}
+
+/// El panel "Filtros" dispara en modo debug un aviso de Flutter
+/// ("ListTile background color or ink splashes may be invisible") que no se
+/// ve en la app; se ignora solo ese aviso.
+Future<void> ignoringListTileWarning(Future<void> Function() body) async {
+  final void Function(FlutterErrorDetails)? original = FlutterError.onError;
+  FlutterError.onError = (details) {
+    if (details.exception.toString().contains('ListTile background color')) {
+      return;
+    }
+    original?.call(details);
+  };
+  try {
+    await body();
+  } finally {
+    FlutterError.onError = original;
+  }
+}
+
+Future<void> openPanel(WidgetTester tester) async {
+  await tester.tap(find.text('Filtros'));
+  await tester.pumpAndSettle();
+}
+
+Finder panelChip(String material) =>
+    find.widgetWithText(FilterChip, material);
+
+Finder panelSwitch() =>
+    find.widgetWithText(SwitchListTile, 'Abiertos ahora');
+
+// ---------------------------------------------------------------- Perfil
+
+/// Repositorio simulado que aplica los cambios al perfil guardado.
+class SavingRepo extends FakeProfileRepository {
+  SavingRepo(super.profile, {this.failSave = false, this.session});
+
+  final bool failSave;
+  final ValueNotifier<bool>? session;
+
+  @override
+  Future<void> update(ProfileUpdate update) async {
+    if (failSave) {
+      throw Exception('sin conexión');
+    }
+    await super.update(update);
+    profile = UserProfile(
+      fullName: update.fullName.trim(),
+      email: profile.email,
+      colony: update.colony,
+      reportsCount: profile.reportsCount,
+      recycledKg: profile.recycledKg,
+      phone: update.phone,
+      bio: update.bio,
+      notifications: update.notifications,
+    );
+  }
+
+  @override
+  Future<void> deleteAccount() async {
+    await super.deleteAccount();
+    session?.value = false;
+  }
+}
+
+/// Abre "Perfil" y luego "Editar perfil", como en la app.
+Future<void> openEditor(
+  WidgetTester tester,
+  SavingRepo repo, {
+  double height = 3400,
+}) async {
+  phone(tester, height: height);
+  await tester.pumpWidget(
+    MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      home: ProfileScreen(repository: repo),
+    ),
+  );
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Editar perfil'));
+  await tester.pumpAndSettle();
+  expect(find.byType(EditProfileScreen), findsOneWidget);
+}
+
+Finder field(String label) => find.widgetWithText(TextFormField, label);
+
+FilledButton saveButton(WidgetTester tester) => tester.widget<FilledButton>(
+  find.widgetWithText(FilledButton, 'Guardar cambios'),
+);
+
+Future<void> unfocus(WidgetTester tester) async {
+  FocusManager.instance.primaryFocus?.unfocus();
+  await tester.pumpAndSettle();
+}
+
+Finder inDialog(Type type) =>
+    find.descendant(of: find.byType(AlertDialog), matching: find.byType(type));
+
+/// Simula que el usuario ya tiene foto: la toma con la cámara simulada.
+Future<void> givePhoto(WidgetTester tester) async {
+  await tester.tap(find.text('Cambiar foto'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Tomar foto'));
+  await tester.pumpAndSettle();
+  expect(find.text('Foto de perfil actualizada.'), findsOneWidget);
+  // Deja que la foto se decodifique para que se vea en la captura.
+  await tester.runAsync(() async {
+    await precacheImage(
+      MemoryImage(photo),
+      tester.element(find.byType(EditProfileScreen)),
+    );
+  });
+  for (int i = 0; i < 5; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  ScaffoldMessenger.of(
+    tester.element(find.byType(EditProfileScreen)),
+  ).removeCurrentSnackBar();
+  await tester.pumpAndSettle();
+}
+
+Future<void> openEditorWithPicker(WidgetTester tester, SavingRepo repo) async {
+  phone(tester, height: 3400);
+  await tester.pumpWidget(
+    MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      home: EditProfileScreen(
+        profile: ana,
+        repository: repo,
+        imagePicker: FakeImagePicker(photo),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
+void main() {
+  setUpAll(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('plugins.flutter.io/path_provider'),
+          (call) async => Directory.systemTemp.createTempSync('eco').path,
+        );
+    await loadFonts();
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await Supabase.initialize(
+      url: 'https://prueba.supabase.co',
+      anonKey: 'anon-key-de-prueba',
+      httpClient: MockClient((request) async {
+        final http.Response response = server(request);
+        return http.Response.bytes(
+          response.bodyBytes,
+          response.statusCode,
+          headers: response.headers,
+          request: request,
+        );
+      }),
+      authOptions: const FlutterAuthClientOptions(
+        detectSessionInUri: false,
+        autoRefreshToken: false,
+        localStorage: EmptyLocalStorage(),
+      ),
+    );
+  });
+
+  // ------------------------------------------------------------ REC
+
+  testWidgets('CP-REC-001', (tester) async {
+    await openCenters(tester);
+    expect(order(tester), hasLength(4));
+    await typeSearch(tester, 'pet');
+    expect(order(tester), <String>[yaqui, contadero]);
+    expect(find.text('Cuajimalpa, CDMX · 2 encontrados'), findsOneWidget);
+    await shot('CP-REC-001');
+  });
+
+  testWidgets('CP-REC-002', (tester) async {
+    await openCenters(tester);
+    await typeSearch(tester, 'Contadero');
+    expect(order(tester), <String>[contadero]);
+    expect(find.text('Cuajimalpa, CDMX · 1 encontrados'), findsOneWidget);
+    await shot('CP-REC-002');
+  });
+
+  testWidgets('CP-REC-003', (tester) async {
+    await openCenters(tester);
+    await typeSearch(tester, 'xyz123');
+    expect(order(tester), isEmpty);
+    expect(find.text('Cuajimalpa, CDMX · 0 encontrados'), findsOneWidget);
+    expect(find.text('No encontramos centros'), findsOneWidget);
+    expect(
+      find.text('Cambia la búsqueda, la distancia o los materiales.'),
+      findsOneWidget,
+    );
+    expect(find.text('Limpiar filtros'), findsOneWidget);
+    await shot('CP-REC-003');
+    // Comprobación extra: "Limpiar filtros" vacía la búsqueda.
+    await tester.tap(find.text('Limpiar filtros'));
+    await tester.pumpAndSettle();
+    expect(order(tester), hasLength(4));
+  });
+
+  testWidgets('CP-REC-004', (tester) async {
+    await ignoringListTileWarning(() async {
+    await openCenters(tester);
+    await openPanel(tester);
+    expect(find.text('Filtrar centros'), findsOneWidget);
+    expect(find.text('Mostrar 4 centros'), findsOneWidget);
+    await tester.tap(panelSwitch());
+    await tester.pumpAndSettle();
+    await tester.tap(panelChip('Vidrio'));
+    await tester.pumpAndSettle();
+    expect(find.text('Mostrar 1 centros'), findsOneWidget);
+    await tester.tap(find.text('Mostrar 1 centros'));
+    await tester.pumpAndSettle();
+    expect(find.text('Filtrar centros'), findsNothing);
+    expect(order(tester), <String>[contadero]);
+    expect(find.text('Abierto'), findsOneWidget);
+    expect(find.text('Cuajimalpa, CDMX · 1 encontrados'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(ActionChip),
+        matching: find.text('2'),
+      ),
+      findsOneWidget,
+    );
+    await shot('CP-REC-004');
+    });
+  });
+
+  testWidgets('CP-REC-005', (tester) async {
+    await ignoringListTileWarning(() async {
+    await openCenters(tester);
+    await openPanel(tester);
+    await tester.tap(panelSwitch());
+    await tester.pumpAndSettle();
+    await tester.tap(panelChip('Cartón'));
+    await tester.pumpAndSettle();
+    expect(find.text('Mostrar 0 centros'), findsOneWidget);
+    await tester.tap(find.text('Mostrar 0 centros'));
+    await tester.pumpAndSettle();
+    expect(order(tester), isEmpty);
+    expect(find.text('No encontramos centros'), findsOneWidget);
+    expect(
+      find.text('Cambia la búsqueda, la distancia o los materiales.'),
+      findsOneWidget,
+    );
+    expect(find.text('Limpiar filtros'), findsOneWidget);
+    await shot('CP-REC-005');
+    });
+  });
+
+  testWidgets('CP-REC-006', (tester) async {
+    await ignoringListTileWarning(() async {
+    await openCenters(tester);
+    expect(order(tester), <String>[yaqui, contadero, sanMateo, santaFe]);
+    await openPanel(tester);
+    await tester.tap(find.text('Mejor calificados'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Mostrar 4 centros'));
+    await tester.pumpAndSettle();
+    expect(order(tester), <String>[sanMateo, contadero, santaFe, yaqui]);
+    expect(find.text('4.9'), findsOneWidget);
+    await shot('CP-REC-006');
+    });
+  });
+
+  testWidgets('CP-REC-007', (tester) async {
+    final Geo geo = Geo(<LocationPermission>[
+      LocationPermission.denied, // intento automático al abrir
+      LocationPermission.whileInUse, // el usuario acepta al tocar el botón
+    ]);
+    await openCenters(tester, geo: geo);
+    expect(find.text('Cuajimalpa, CDMX · 4 encontrados'), findsOneWidget);
+    expect(order(tester), <String>[yaqui, contadero, sanMateo, santaFe]);
+    await tester.tap(find.byTooltip('Usar mi ubicación'));
+    await network(tester);
+    expect(find.text('Cerca de ti · 4 encontrados'), findsOneWidget);
+    expect(order(tester), <String>[contadero, yaqui, santaFe, sanMateo]);
+    expect(find.text('0.7 km'), findsOneWidget);
+    expect(find.text('2.2 km'), findsOneWidget);
+    expect(find.text('3.2 km'), findsOneWidget);
+    expect(find.text('3.6 km'), findsOneWidget);
+    await shot('CP-REC-007');
+  });
+
+  testWidgets('CP-REC-008', (tester) async {
+    final Geo geo = Geo(<LocationPermission>[LocationPermission.denied]);
+    await openCenters(tester, geo: geo);
+    final List<String> before = order(tester);
+    expect(before, <String>[yaqui, contadero, sanMateo, santaFe]);
+    await tester.tap(find.byTooltip('Usar mi ubicación'));
+    await network(tester);
+    expect(geo.requests, 2);
+    expect(find.text('No diste permiso para usar tu ubicación.'), findsOneWidget);
+    expect(find.text('No pudimos obtener tu ubicación.'), findsNothing);
+    expect(find.text('Cuajimalpa, CDMX · 4 encontrados'), findsOneWidget);
+    expect(order(tester), before);
+    await tester.pump(const Duration(milliseconds: 300));
+    await shot('CP-REC-008');
+  });
+
+  testWidgets('CP-REC-009', (tester) async {
+    final FakeLauncher launcher = FakeLauncher();
+    UrlLauncherPlatform.instance = launcher;
+    await openCenters(tester);
+    // Abrir "Punto Limpio Contadero".
+    await tester.tap(find.text(contadero));
+    await tester.pumpAndSettle();
+    expect(find.text('Cómo llegar'), findsOneWidget);
+    await shot('CP-REC-009');
+    await tester.tap(find.text('Cómo llegar'));
+    await network(tester);
+    expect(launcher.opened, <String>[
+      'https://www.google.com/maps/dir/?api=1&destination=19.3609%2C-99.2851',
+    ]);
+    expect(find.text('No se pudo abrir el mapa.'), findsNothing);
+  });
+
+  testWidgets('CP-REC-010', (tester) async {
+    final FakeLauncher launcher = FakeLauncher();
+    UrlLauncherPlatform.instance = launcher;
+    await openCenters(tester);
+    await tester.tap(find.text(contadero));
+    await tester.pumpAndSettle();
+    expect(find.text('Llamar'), findsOneWidget);
+    await shot('CP-REC-010');
+    await tester.tap(find.text('Llamar'));
+    await network(tester);
+    expect(launcher.opened, <String>['tel:5512345678']);
+    expect(find.textContaining('Teléfono:'), findsNothing);
+  });
+
+  testWidgets('CP-REC-012', (tester) async {
+    await openCenters(tester);
+    expect(find.text('Abierto'), findsNWidgets(2));
+    expect(find.text('Cerrado'), findsNWidgets(2));
+    expect(find.byIcon(Icons.star_rounded), findsNWidgets(4));
+    for (final String r in <String>['4.9', '4.6', '4.2', '3.8']) {
+      expect(find.text(r), findsOneWidget);
+    }
+    await shot('CP-REC-012');
+  });
+
+  testWidgets('CP-REC-013', (tester) async {
+    await openCenters(tester);
+    // Al abrir, la tarjeta desplegada es la del primer centro por nombre.
+    expect(find.text('Materiales aceptados:'), findsOneWidget);
+    expect(find.text('Aluminio'), findsNothing);
+    await tester.tap(find.text(yaqui));
+    await tester.pumpAndSettle();
+    expect(find.text('Materiales aceptados:'), findsOneWidget);
+    expect(find.text('Aluminio'), findsOneWidget);
+    expect(find.text('PET'), findsOneWidget);
+    expect(find.text('Lun-Dom 07:00-15:00'), findsOneWidget);
+    expect(find.text('Cómo llegar'), findsOneWidget);
+    expect(find.text('Llamar'), findsOneWidget);
+    await shot('CP-REC-013');
+  });
+
+  testWidgets('CP-REC-014', (tester) async {
+    await ignoringListTileWarning(() async {
+    await openCenters(tester);
+    // Preparación: dejar filtros activos.
+    await openPanel(tester);
+    await tester.tap(panelSwitch());
+    await tester.tap(panelChip('Vidrio'));
+    await tester.tap(find.text('Mejor calificados'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Mostrar 1 centros'));
+    await tester.pumpAndSettle();
+    expect(order(tester), <String>[contadero]);
+
+    await openPanel(tester);
+    expect(find.text('Filtrar centros'), findsOneWidget);
+    expect(tester.widget<SwitchListTile>(panelSwitch()).value, isTrue);
+    expect(tester.widget<FilterChip>(panelChip('Vidrio')).selected, isTrue);
+    await tester.tap(find.text('Limpiar'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(panelSwitch()).value, isFalse);
+    for (final String m in <String>['Aluminio', 'Cartón', 'PET', 'Papel', 'Vidrio']) {
+      expect(tester.widget<FilterChip>(panelChip(m)).selected, isFalse);
+    }
+    expect(find.text('Sin límite'), findsOneWidget);
+    expect(find.text('Mostrar 4 centros'), findsOneWidget);
+    await shot('CP-REC-014');
+    await tester.tap(find.text('Mostrar 4 centros'));
+    await tester.pumpAndSettle();
+    expect(order(tester), <String>[yaqui, contadero, sanMateo, santaFe]);
+    expect(
+      find.descendant(of: find.byType(ActionChip), matching: find.text('3')),
+      findsNothing,
+    );
+    });
+  });
+
+  testWidgets('CP-REC-015', (tester) async {
+    await openCenters(
+      tester,
+      geo: Geo(<LocationPermission>[LocationPermission.whileInUse]),
+    );
+    expect(find.text('Cerca de ti · 4 encontrados'), findsOneWidget);
+    for (final String d in <String>['0.7 km', '2.2 km', '3.2 km', '3.6 km']) {
+      expect(find.text(d), findsOneWidget);
+    }
+    await shot('CP-REC-015');
+  });
+
+  // ------------------------------------------------------------ PER
+
+  testWidgets('CP-PER-001', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.enterText(field('Nombre completo'), 'Ana María Pérez');
+    await tester.enterText(field('Teléfono (opcional)'), '55 1234 5678');
+    await tester.enterText(field('Sobre mí (opcional)'), 'Vecina de Contadero');
+    await unfocus(tester);
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Contadero').last);
+    await tester.pumpAndSettle();
+    expect(saveButton(tester).onPressed, isNotNull);
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(repo.updates, hasLength(1));
+    final ProfileUpdate u = repo.updates.single;
+    expect(u.fullName, 'Ana María Pérez');
+    expect(u.colony, 'Contadero');
+    expect(u.phone, '55 1234 5678');
+    expect(u.bio, 'Vecina de Contadero');
+    expect(find.byType(EditProfileScreen), findsNothing);
+    expect(find.text('Perfil actualizado.'), findsOneWidget);
+    expect(find.text('Ana María Pérez'), findsOneWidget);
+    expect(find.text('Contadero'), findsOneWidget);
+    expect(find.text('Vecina de Contadero'), findsOneWidget);
+    await shot('CP-PER-001');
+  });
+
+  testWidgets('CP-PER-002', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.enterText(field('Nombre completo'), 'Ana López');
+    await unfocus(tester);
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ingresa tu nombre completo'), findsNothing);
+    expect(find.text('El nombre es demasiado corto'), findsNothing);
+    expect(repo.updates.single.fullName, 'Ana López');
+    expect(find.text('Perfil actualizado.'), findsOneWidget);
+    expect(find.text('Ana López'), findsOneWidget);
+    await shot('CP-PER-002');
+  });
+
+  testWidgets('CP-PER-003', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.enterText(field('Nombre completo'), '');
+    await unfocus(tester);
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ingresa tu nombre completo'), findsOneWidget);
+    expect(find.text('Revisa los campos marcados en rojo.'), findsOneWidget);
+    expect(repo.updates, isEmpty);
+    expect(find.byType(EditProfileScreen), findsOneWidget);
+    await shot('CP-PER-003');
+  });
+
+  testWidgets('CP-PER-004', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.enterText(field('Nombre completo'), 'Al');
+    await unfocus(tester);
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(find.text('El nombre es demasiado corto'), findsOneWidget);
+    expect(find.text('Revisa los campos marcados en rojo.'), findsOneWidget);
+    expect(repo.updates, isEmpty);
+    expect(find.byType(EditProfileScreen), findsOneWidget);
+    await shot('CP-PER-004');
+  });
+
+  testWidgets('CP-PER-005', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.enterText(field('Teléfono (opcional)'), '55 1234 5678');
+    await unfocus(tester);
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ingresa un teléfono de 10 dígitos'), findsNothing);
+    expect(repo.updates.single.phone, '55 1234 5678');
+    expect(find.text('Perfil actualizado.'), findsOneWidget);
+    // Se vuelve a abrir el editor para ver el teléfono guardado.
+    ScaffoldMessenger.of(
+      tester.element(find.byType(ProfileScreen)),
+    ).removeCurrentSnackBar();
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Editar perfil'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<EditableText>(
+            find.descendant(
+              of: field('Teléfono (opcional)'),
+              matching: find.byType(EditableText),
+            ),
+          )
+          .controller
+          .text,
+      '55 1234 5678',
+    );
+    await shot('CP-PER-005');
+  });
+
+  testWidgets('CP-PER-006', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.enterText(field('Teléfono (opcional)'), '12345');
+    await unfocus(tester);
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ingresa un teléfono de 10 dígitos'), findsOneWidget);
+    expect(find.text('Revisa los campos marcados en rojo.'), findsOneWidget);
+    expect(repo.updates, isEmpty);
+    expect(find.byType(EditProfileScreen), findsOneWidget);
+    await shot('CP-PER-006');
+  });
+
+  testWidgets('CP-PER-007', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    final String long = 'a' * 170;
+    await tester.enterText(field('Sobre mí (opcional)'), long);
+    await unfocus(tester);
+    final String text = tester
+        .widget<EditableText>(
+          find.descendant(
+            of: field('Sobre mí (opcional)'),
+            matching: find.byType(EditableText),
+          ),
+        )
+        .controller
+        .text;
+    expect(text.length, 160);
+    expect(find.text('160/160'), findsOneWidget);
+    expect(find.text('Máximo 160 caracteres'), findsNothing);
+    await shot('CP-PER-007');
+  });
+
+  testWidgets('CP-PER-008', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.tap(find.text('Contraseña'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cambiar contraseña'), findsOneWidget);
+    await tester.enterText(inDialog(TextFormField).at(0), 'Nueva2026');
+    await tester.enterText(inDialog(TextFormField).at(1), 'Nueva2026');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cambiar'));
+    await tester.pumpAndSettle();
+    expect(repo.passwords, <String>['Nueva2026']);
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('Contraseña actualizada.'), findsOneWidget);
+    await shot('CP-PER-008');
+  });
+
+  testWidgets('CP-PER-009', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.tap(find.text('Contraseña'));
+    await tester.pumpAndSettle();
+    await tester.enterText(inDialog(TextFormField).at(0), 'Nueva1');
+    await tester.enterText(inDialog(TextFormField).at(1), 'Nueva1');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cambiar'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('La contraseña debe tener al menos 8 caracteres'),
+      findsOneWidget,
+    );
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(repo.passwords, isEmpty);
+    expect(find.text('Contraseña actualizada.'), findsNothing);
+    await shot('CP-PER-009');
+  });
+
+  testWidgets('CP-PER-011', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.tap(find.text('Correo electrónico'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cambiar correo'), findsOneWidget);
+    await tester.enterText(inDialog(TextFormField), 'ana@correo.mx');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Enviar enlace'));
+    await tester.pumpAndSettle();
+    expect(find.text('Es el mismo correo que ya usas'), findsOneWidget);
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(repo.emails, isEmpty);
+    expect(find.textContaining('Te enviamos un enlace'), findsNothing);
+    await shot('CP-PER-011');
+  });
+
+  testWidgets('CP-PER-012', (tester) async {
+    final ValueNotifier<bool> session = ValueNotifier<bool>(true);
+    final SavingRepo repo = SavingRepo(ana, session: session);
+    phone(tester, height: 3400);
+    // Igual que AuthGate: con sesión muestra la app, sin sesión el login.
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: ValueListenableBuilder<bool>(
+          valueListenable: session,
+          builder: (context, active, _) => active
+              ? ProfileScreen(repository: repo)
+              : const LoginScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Editar perfil'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Eliminar mi cuenta'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Eliminar mi cuenta'));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Eliminar tu cuenta?'), findsOneWidget);
+    await tester.enterText(inDialog(TextField), 'ELIMINAR');
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Eliminar')).onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Eliminar'));
+    await tester.pumpAndSettle();
+    expect(repo.deleted, isTrue);
+    expect(find.byType(EditProfileScreen), findsNothing);
+    expect(find.byType(LoginScreen), findsOneWidget);
+    await shot('CP-PER-012');
+  });
+
+  testWidgets('CP-PER-013', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.ensureVisible(find.text('Eliminar mi cuenta'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Eliminar mi cuenta'));
+    await tester.pumpAndSettle();
+    FilledButton delete() => tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Eliminar'),
+    );
+    expect(delete().onPressed, isNull); // vacío
+    await tester.enterText(inDialog(TextField), 'eliminar');
+    await tester.pumpAndSettle();
+    expect(delete().onPressed, isNull);
+    await tester.tap(find.widgetWithText(FilledButton, 'Eliminar'));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Eliminar tu cuenta?'), findsOneWidget);
+    expect(repo.deleted, isFalse);
+    await shot('CP-PER-013');
+  });
+
+  testWidgets('CP-PER-014', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditorWithPicker(tester, repo);
+    await givePhoto(tester);
+    await tester.tap(find.text('Cambiar foto'));
+    await tester.pumpAndSettle();
+    expect(find.text('Tomar foto'), findsOneWidget);
+    expect(find.text('Elegir de la galería'), findsOneWidget);
+    expect(find.text('Quitar foto'), findsOneWidget);
+    await shot('CP-PER-014');
+  });
+
+  testWidgets('CP-PER-015', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditorWithPicker(tester, repo);
+    await givePhoto(tester);
+    expect(find.text('AP'), findsNothing);
+    await tester.tap(find.text('Cambiar foto'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Quitar foto'));
+    await tester.pumpAndSettle();
+    expect(repo.avatarRemovals, 1);
+    expect(find.text('Foto eliminada.'), findsOneWidget);
+    expect(find.text('AP'), findsOneWidget);
+    expect(find.byType(Image), findsNothing);
+    await shot('CP-PER-015');
+  });
+
+  testWidgets('CP-PER-016', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    expect(saveButton(tester).onPressed, isNull);
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(repo.updates, isEmpty);
+    expect(find.byType(EditProfileScreen), findsOneWidget);
+    await shot('CP-PER-016');
+  });
+
+  testWidgets('CP-PER-017', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    expect(saveButton(tester).onPressed, isNull);
+    await tester.enterText(field('Nombre completo'), 'Ana María Pérez');
+    await unfocus(tester);
+    expect(saveButton(tester).onPressed, isNotNull);
+    await shot('CP-PER-017');
+  });
+
+  testWidgets('CP-PER-018', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.enterText(field('Nombre completo'), 'Ana María Pérez');
+    await unfocus(tester);
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Salir sin guardar?'), findsOneWidget);
+    expect(find.text('Los cambios que hiciste se perderán.'), findsOneWidget);
+    await tester.tap(find.text('Seguir editando'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(EditProfileScreen), findsOneWidget);
+    expect(find.text('Ana María Pérez'), findsOneWidget);
+    expect(saveButton(tester).onPressed, isNotNull);
+    expect(repo.updates, isEmpty);
+    await shot('CP-PER-018');
+  });
+
+  testWidgets('CP-PER-019', (tester) async {
+    final SavingRepo repo = SavingRepo(ana);
+    await openEditor(tester, repo);
+    await tester.enterText(field('Nombre completo'), 'Ana María Pérez');
+    await unfocus(tester);
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Salir sin guardar?'), findsOneWidget);
+    await tester.tap(find.text('Salir'));
+    await tester.pumpAndSettle();
+    expect(find.byType(EditProfileScreen), findsNothing);
+    expect(find.byType(ProfileScreen), findsOneWidget);
+    expect(find.text('Ana Pérez'), findsOneWidget);
+    expect(find.text('Ana María Pérez'), findsNothing);
+    expect(find.text('Perfil actualizado.'), findsNothing);
+    expect(repo.updates, isEmpty);
+    await shot('CP-PER-019');
+    // Al volver a abrir el editor aparece el nombre original.
+    await tester.tap(find.text('Editar perfil'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ana Pérez'), findsOneWidget);
+  });
+
+  testWidgets('CP-PER-020', (tester) async {
+    final SavingRepo repo = SavingRepo(ana, failSave: true);
+    await openEditor(tester, repo);
+    await tester.enterText(field('Nombre completo'), 'Ana María Pérez');
+    await unfocus(tester);
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(find.text('No se pudieron guardar los cambios.'), findsOneWidget);
+    expect(find.byType(EditProfileScreen), findsOneWidget);
+    expect(find.text('Ana María Pérez'), findsOneWidget);
+    expect(repo.updates, isEmpty);
+    expect(repo.profile.fullName, 'Ana Pérez');
+    expect(saveButton(tester).onPressed, isNotNull);
+    await shot('CP-PER-020');
+  });
+}

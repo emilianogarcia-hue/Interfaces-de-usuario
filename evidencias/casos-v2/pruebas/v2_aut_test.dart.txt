@@ -1,0 +1,939 @@
+// Casos CP-AUT de la matriz v2 (registro, inicio de sesión, recuperar
+// contraseña y cerrar sesión). Las respuestas de Supabase se simulan.
+// No es parte del repo.
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:ecocuajimalpa/features/auth/presentation/forgot_password_screen.dart';
+import 'package:ecocuajimalpa/features/auth/presentation/login_screen.dart';
+import 'package:ecocuajimalpa/features/auth/presentation/register_screen.dart';
+import 'package:ecocuajimalpa/features/profile/presentation/profile_screen.dart';
+import 'package:ecocuajimalpa/main.dart' show AuthGate;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../helpers.dart';
+import 'shots_test.dart' show loadFonts, theme, phone, ana;
+
+final List<http.Request> requests = <http.Request>[];
+http.Response Function(http.Request request) server = (_) =>
+    http.Response('{}', 200);
+
+http.Response json(Object body, [int status = 200]) => http.Response(
+  jsonEncode(body),
+  status,
+  headers: <String, String>{'content-type': 'application/json; charset=utf-8'},
+);
+
+Map<String, dynamic> user(String email) => <String, dynamic>{
+  'id': '6f1c2b1e-0000-4000-8000-000000000001',
+  'aud': 'authenticated',
+  'role': 'authenticated',
+  'email': email,
+  'app_metadata': <String, dynamic>{},
+  'user_metadata': <String, dynamic>{
+    'full_name': 'Ana Pérez',
+    'colony': 'Santa Fe',
+  },
+  'created_at': '2026-10-01T00:00:00Z',
+};
+
+Map<String, dynamic> session(String email) => <String, dynamic>{
+  'access_token': 'token-de-prueba',
+  'token_type': 'bearer',
+  'expires_in': 3600,
+  'expires_at': 4102444800,
+  'refresh_token': 'refresh-de-prueba',
+  'user': user(email),
+};
+
+/// Respuestas comunes de la API REST (perfil y listas vacías).
+http.Response rest(http.Request request) {
+  final String path = request.url.path;
+  if (path.endsWith('/rest/v1/profiles')) {
+    return json(<String, dynamic>{
+      'full_name': 'Ana Pérez',
+      'colony': 'Santa Fe',
+      'reports_count': 2,
+      'recycled_kg': 0,
+    });
+  }
+  if (path.contains('/rest/v1/')) {
+    return json(<dynamic>[]);
+  }
+  return json(<String, dynamic>{});
+}
+
+/// Servidor que acepta el registro y el inicio de sesión de Ana.
+http.Response okServer(http.Request request) {
+  final String path = request.url.path;
+  if (path.endsWith('/auth/v1/signup')) {
+    final Map<String, dynamic> body =
+        jsonDecode(request.body) as Map<String, dynamic>;
+    return json(session(body['email'] as String));
+  }
+  if (path.endsWith('/auth/v1/token')) {
+    final Map<String, dynamic> body =
+        jsonDecode(request.body) as Map<String, dynamic>;
+    if (body['email'] == 'ana@correo.mx' && body['password'] == 'Clave2026') {
+      return json(session('ana@correo.mx'));
+    }
+    return json(<String, dynamic>{
+      'code': 400,
+      'error_code': 'invalid_credentials',
+      'msg': 'Invalid login credentials',
+    }, 400);
+  }
+  if (path.endsWith('/auth/v1/recover')) {
+    return json(<String, dynamic>{});
+  }
+  if (path.endsWith('/auth/v1/verify')) {
+    final String? token =
+        (jsonDecode(request.body) as Map<String, dynamic>)['token'] as String?;
+    if (token != '123456') {
+      return json(<String, dynamic>{
+        'code': 403,
+        'error_code': 'otp_expired',
+        'msg': 'Token has expired or is invalid',
+      }, 403);
+    }
+    return json(session('ana@correo.mx'));
+  }
+  if (path.endsWith('/auth/v1/user')) {
+    final Map<String, dynamic> body = request.body.isEmpty
+        ? <String, dynamic>{}
+        : jsonDecode(request.body) as Map<String, dynamic>;
+    if (body['password'] == 'Clave2026') {
+      // Respuesta real de Supabase Auth cuando la nueva contraseña es igual.
+      return json(<String, dynamic>{
+        'code': 422,
+        'error_code': 'same_password',
+        'msg': 'New password should be different from the old password.',
+      }, 422);
+    }
+    return json(user('ana@correo.mx'));
+  }
+  return rest(request);
+}
+
+Iterable<http.Request> calls(String suffix) =>
+    requests.where((r) => r.url.path.endsWith(suffix));
+
+Future<void> network(WidgetTester tester) async {
+  for (int i = 0; i < 20; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  await tester.pumpAndSettle();
+}
+
+/// Cierra la app completa y el canal en tiempo real que abre Inicio.
+Future<void> closeApp(WidgetTester tester) async {
+  await tester.pumpWidget(const SizedBox());
+  await Supabase.instance.client.removeAllChannels();
+  await tester.runAsync(() => Supabase.instance.client.realtime.disconnect());
+  await tester.pump(const Duration(seconds: 30));
+}
+
+Future<void> shot(String id) async {
+  FocusManager.instance.primaryFocus?.unfocus();
+  await expectLater(
+    find.byType(MaterialApp).first,
+    matchesGoldenFile('out2/$id.png'),
+  );
+}
+
+Future<void> app(WidgetTester tester, Widget home, {double height = 2400}) async {
+  phone(tester, height: height);
+  await tester.pumpWidget(
+    MaterialApp(debugShowCheckedModeBanner: false, theme: theme, home: home),
+  );
+  await tester.pumpAndSettle();
+}
+
+/// Abre "Crear cuenta" desde el inicio de sesión, como en la app.
+Future<void> openRegister(WidgetTester tester) async {
+  await app(tester, const LoginScreen(), height: 2800);
+  await tester.tap(find.text('Crear cuenta'));
+  await tester.pumpAndSettle();
+  expect(find.byType(RegisterScreen), findsOneWidget);
+}
+
+Future<void> fillRegister(
+  WidgetTester tester, {
+  String name = 'Ana Pérez',
+  String email = 'ana@correo.mx',
+  String password = 'Clave2026',
+  String confirm = 'Clave2026',
+  String? colony = 'Santa Fe',
+  bool terms = true,
+}) async {
+  final Finder fields = find.byType(TextFormField);
+  await tester.enterText(fields.at(0), name);
+  await tester.enterText(fields.at(1), email);
+  await tester.enterText(fields.at(2), password);
+  await tester.enterText(fields.at(3), confirm);
+  if (colony != null) {
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(colony).last);
+    await tester.pumpAndSettle();
+  }
+  if (terms) {
+    await tester.tap(find.byType(Checkbox));
+    await tester.pumpAndSettle();
+  }
+}
+
+Future<void> tapCreate(WidgetTester tester) async {
+  await tester.tap(find.widgetWithText(FilledButton, 'Crear cuenta'));
+  await network(tester);
+}
+
+/// Registro completo correcto: cuenta creada y regreso al inicio de sesión.
+Future<void> registerOk(
+  WidgetTester tester,
+  String id, {
+  String email = 'ana@correo.mx',
+}) async {
+  server = okServer;
+  await openRegister(tester);
+  await fillRegister(tester, email: email);
+  await shot('${id}_antes');
+  await tapCreate(tester);
+  final List<http.Request> signups = calls('/signup').toList();
+  expect(signups, hasLength(1));
+  final Map<String, dynamic> body =
+      jsonDecode(signups.single.body) as Map<String, dynamic>;
+  expect(body['email'], email);
+  expect(body['password'], 'Clave2026');
+  expect((body['data'] as Map<String, dynamic>)['full_name'], 'Ana Pérez');
+  expect((body['data'] as Map<String, dynamic>)['colony'], 'Santa Fe');
+  expect(
+    find.text('Cuenta creada correctamente. Ya puedes iniciar sesión.'),
+    findsOneWidget,
+  );
+  expect(find.byType(RegisterScreen), findsNothing);
+  expect(find.text('Inicia sesión para continuar'), findsOneWidget);
+  expect(Supabase.instance.client.auth.currentSession, isNull);
+}
+
+bool obscured(WidgetTester tester, int index) => tester
+    .widget<EditableText>(find.byType(EditableText).at(index))
+    .obscureText;
+
+TextField field(WidgetTester tester, int index) =>
+    tester.widget<TextField>(find.byType(TextField).at(index));
+
+Future<void> loginWith(WidgetTester tester, String email, String password) async {
+  final Finder fields = find.byType(TextFormField);
+  await tester.enterText(fields.at(0), email);
+  await tester.enterText(fields.at(1), password);
+  await tester.tap(find.widgetWithText(FilledButton, 'Iniciar sesión'));
+  await network(tester);
+}
+
+/// Abre Recuperar contraseña desde el inicio de sesión con el correo escrito.
+Future<void> openForgot(WidgetTester tester, {String email = 'ana@correo.mx'}) async {
+  await app(tester, const LoginScreen());
+  await tester.enterText(find.byType(TextFormField).at(0), email);
+  await tester.tap(find.text('¿Olvidaste tu contraseña?'));
+  await tester.pumpAndSettle();
+  expect(find.byType(ForgotPasswordScreen), findsOneWidget);
+}
+
+Future<void> sendCode(WidgetTester tester) async {
+  await tester.tap(find.text('Enviar código'));
+  await network(tester);
+  expect(find.text('Cambiar contraseña'), findsOneWidget);
+}
+
+Future<void> fillReset(
+  WidgetTester tester, {
+  String code = '123456',
+  String password = 'Nueva2026',
+  String? confirm,
+}) async {
+  final Finder fields = find.byType(TextFormField);
+  await tester.enterText(fields.at(1), code);
+  await tester.enterText(fields.at(2), password);
+  await tester.enterText(fields.at(3), confirm ?? password);
+  await tester.tap(find.text('Cambiar contraseña'));
+  await network(tester);
+}
+
+void main() {
+  setUpAll(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('plugins.flutter.io/path_provider'),
+          (call) async => Directory.systemTemp.createTempSync('eco').path,
+        );
+    await loadFonts();
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await Supabase.initialize(
+      url: 'https://prueba.supabase.co',
+      anonKey: 'anon-key-de-prueba',
+      httpClient: MockClient((request) async {
+        requests.add(request);
+        final http.Response response = server(request);
+        return http.Response.bytes(
+          response.bodyBytes,
+          response.statusCode,
+          headers: response.headers,
+          request: request,
+        );
+      }),
+      authOptions: const FlutterAuthClientOptions(
+        detectSessionInUri: false,
+        autoRefreshToken: false,
+        localStorage: EmptyLocalStorage(),
+      ),
+    );
+  });
+
+  setUp(() {
+    requests.clear();
+    server = okServer;
+  });
+
+  tearDown(() async {
+    if (Supabase.instance.client.auth.currentSession != null) {
+      await Supabase.instance.client.auth.signOut();
+    }
+  });
+
+  // ---------------- Registro ----------------
+
+  testWidgets('CP-AUT-001', (tester) async {
+    await registerOk(tester, 'CP-AUT-001');
+    await shot('CP-AUT-001');
+  });
+
+  testWidgets('CP-AUT-002', (tester) async {
+    await openRegister(tester);
+    await fillRegister(tester, name: '');
+    await tapCreate(tester);
+    expect(find.text('Ingresa tu nombre completo'), findsOneWidget);
+    expect(find.text('Ingresa tu correo electrónico'), findsNothing);
+    expect(calls('/signup'), isEmpty);
+    expect(find.byType(RegisterScreen), findsOneWidget);
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, 600));
+    await tester.pumpAndSettle();
+    await shot('CP-AUT-002');
+  });
+
+  testWidgets('CP-AUT-003', (tester) async {
+    await openRegister(tester);
+    await fillRegister(tester, colony: null);
+    await tapCreate(tester);
+    expect(find.text('Selecciona tu colonia'), findsOneWidget);
+    expect(calls('/signup'), isEmpty);
+    expect(find.byType(RegisterScreen), findsOneWidget);
+    await shot('CP-AUT-003');
+  });
+
+  testWidgets('CP-AUT-004', (tester) async {
+    await openRegister(tester);
+    await fillRegister(tester);
+    await shot('CP-AUT-004_antes');
+    expect(find.text('Clave2026'), findsNWidgets(2));
+    await tapCreate(tester);
+    expect(find.text('La contraseña debe tener al menos 8 caracteres'),
+        findsNothing);
+    expect(calls('/signup'), hasLength(1));
+    expect(
+      find.text('Cuenta creada correctamente. Ya puedes iniciar sesión.'),
+      findsOneWidget,
+    );
+    expect(find.text('Inicia sesión para continuar'), findsOneWidget);
+    await shot('CP-AUT-004');
+  });
+
+  testWidgets('CP-AUT-005', (tester) async {
+    await openRegister(tester);
+    await tester.enterText(find.byType(TextFormField).at(2), 'Clave1');
+    await tapCreate(tester);
+    expect(find.text('La contraseña debe tener al menos 8 caracteres'),
+        findsOneWidget);
+    expect(calls('/signup'), isEmpty);
+    expect(find.byType(RegisterScreen), findsOneWidget);
+    await shot('CP-AUT-005');
+  });
+
+  testWidgets('CP-AUT-006', (tester) async {
+    await openRegister(tester);
+    await fillRegister(tester, confirm: 'Clave2027');
+    await tapCreate(tester);
+    expect(find.text('Las contraseñas no coinciden'), findsOneWidget);
+    expect(calls('/signup'), isEmpty);
+    expect(find.byType(RegisterScreen), findsOneWidget);
+    await shot('CP-AUT-006');
+  });
+
+  testWidgets('CP-AUT-007', (tester) async {
+    await openRegister(tester);
+    await fillRegister(tester);
+    await shot('CP-AUT-007_antes');
+    expect(find.text('ana@correo.mx'), findsOneWidget);
+    await tapCreate(tester);
+    expect(find.text('Ingresa un correo válido'), findsNothing);
+    expect(find.text('Ingresa tu correo electrónico'), findsNothing);
+    expect(calls('/signup'), hasLength(1));
+    expect(
+      find.text('Cuenta creada correctamente. Ya puedes iniciar sesión.'),
+      findsOneWidget,
+    );
+    await shot('CP-AUT-007');
+  });
+
+  testWidgets('CP-AUT-008', (tester) async {
+    await openRegister(tester);
+    await fillRegister(tester, email: 'ana@correo');
+    await tapCreate(tester);
+    expect(find.text('Ingresa un correo válido'), findsOneWidget);
+    expect(calls('/signup'), isEmpty);
+    expect(find.byType(RegisterScreen), findsOneWidget);
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, 600));
+    await tester.pumpAndSettle();
+    await shot('CP-AUT-008');
+  });
+
+  testWidgets('CP-AUT-009', (tester) async {
+    await openRegister(tester);
+    await fillRegister(tester);
+    await shot('CP-AUT-009_antes');
+    expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isTrue);
+    await tapCreate(tester);
+    expect(
+      find.text('Debes aceptar los términos de uso y el aviso de privacidad.'),
+      findsNothing,
+    );
+    expect(calls('/signup'), hasLength(1));
+    expect(
+      find.text('Cuenta creada correctamente. Ya puedes iniciar sesión.'),
+      findsOneWidget,
+    );
+    await shot('CP-AUT-009');
+  });
+
+  testWidgets('CP-AUT-010', (tester) async {
+    await openRegister(tester);
+    await fillRegister(tester, terms: false);
+    expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
+    await tester.tap(find.widgetWithText(FilledButton, 'Crear cuenta'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 750));
+    expect(
+      find.text('Debes aceptar los términos de uso y el aviso de privacidad.'),
+      findsOneWidget,
+    );
+    expect(calls('/signup'), isEmpty);
+    expect(find.byType(RegisterScreen), findsOneWidget);
+    await shot('CP-AUT-010');
+  });
+
+  testWidgets('CP-AUT-011', (tester) async {
+    await registerOk(tester, 'CP-AUT-011', email: 'nuevo@correo.mx');
+    await shot('CP-AUT-011');
+  });
+
+  testWidgets('CP-AUT-012', (tester) async {
+    server = (request) {
+      if (request.url.path.endsWith('/auth/v1/signup')) {
+        return json(<String, dynamic>{
+          'code': 422,
+          'error_code': 'user_already_exists',
+          'msg': 'User already registered',
+        }, 422);
+      }
+      return okServer(request);
+    };
+    await openRegister(tester);
+    await fillRegister(tester);
+    await tapCreate(tester);
+    expect(calls('/signup'), hasLength(1));
+    expect(find.text('Ya existe una cuenta con este correo.'), findsOneWidget);
+    final SnackBar bar = tester.widget<SnackBar>(find.byType(SnackBar));
+    expect(bar.backgroundColor, Colors.red);
+    expect(find.byType(RegisterScreen), findsOneWidget);
+    expect(Supabase.instance.client.auth.currentSession, isNull);
+    await shot('CP-AUT-012');
+  });
+
+  testWidgets('CP-AUT-013', (tester) async {
+    await openRegister(tester);
+    expect(find.text('Selecciona una colonia'), findsOneWidget);
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    for (final String c in <String>[
+      'Cuajimalpa Centro',
+      'Santa Fe',
+      'Contadero',
+      'San Pablo Chimalpa',
+      'Otra colonia',
+    ]) {
+      expect(find.text(c), findsWidgets);
+    }
+    await shot('CP-AUT-013');
+    await tester.tap(find.text('Santa Fe').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Santa Fe'), findsOneWidget);
+    expect(find.text('Selecciona una colonia'), findsNothing);
+  });
+
+  testWidgets('CP-AUT-014', (tester) async {
+    await openRegister(tester);
+    await tester.enterText(find.byType(TextFormField).at(2), 'Clave2026');
+    await tester.pump();
+    expect(obscured(tester, 2), isTrue);
+    await tester.tap(find.byIcon(Icons.visibility_outlined).first);
+    await tester.pump();
+    expect(obscured(tester, 2), isFalse);
+    expect(find.byIcon(Icons.visibility_off_outlined), findsOneWidget);
+    expect(find.text('Clave2026'), findsOneWidget);
+    await shot('CP-AUT-014');
+    await tester.tap(find.byIcon(Icons.visibility_off_outlined));
+    await tester.pump();
+    expect(obscured(tester, 2), isTrue);
+    expect(find.byIcon(Icons.visibility_off_outlined), findsNothing);
+  });
+
+  testWidgets('CP-AUT-015', (tester) async {
+    await openRegister(tester);
+    await tapCreate(tester);
+    for (final String m in <String>[
+      'Ingresa tu nombre completo',
+      'Ingresa tu correo electrónico',
+      'Ingresa tu contraseña',
+      'Confirma tu contraseña',
+      'Selecciona tu colonia',
+    ]) {
+      expect(find.text(m), findsOneWidget);
+    }
+    for (int i = 0; i < 4; i++) {
+      expect(field(tester, i).decoration?.errorText, isNotNull);
+    }
+    expect(calls('/signup'), isEmpty);
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, 600));
+    await tester.pumpAndSettle();
+    await shot('CP-AUT-015');
+  });
+
+  testWidgets('CP-AUT-016', (tester) async {
+    await registerOk(tester, 'CP-AUT-016');
+    await shot('CP-AUT-016');
+  });
+
+  // ---------------- Inicio de sesión ----------------
+
+  testWidgets('CP-AUT-017', (tester) async {
+    await app(tester, const AuthGate());
+    expect(find.text('Inicia sesión para continuar'), findsOneWidget);
+    await loginWith(tester, 'ana@correo.mx', 'Clave2026');
+    expect(calls('/token'), hasLength(1));
+    expect(find.text('Ingresa un correo válido'), findsNothing);
+    expect(Supabase.instance.client.auth.currentSession, isNotNull);
+    expect(find.byType(LoginScreen), findsNothing);
+    expect(find.text('Bienvenido/a, Ana'), findsOneWidget);
+    await shot('CP-AUT-017');
+    await closeApp(tester);
+  });
+
+  testWidgets('CP-AUT-018', (tester) async {
+    await app(tester, const LoginScreen());
+    await tester.tap(find.widgetWithText(FilledButton, 'Iniciar sesión'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ingresa tu correo electrónico'), findsOneWidget);
+    expect(find.text('Ingresa tu contraseña'), findsOneWidget);
+    expect(requests, isEmpty);
+    await shot('CP-AUT-018');
+  });
+
+  testWidgets('CP-AUT-019', (tester) async {
+    await app(tester, const AuthGate());
+    final Finder fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(0), 'ana@correo.mx');
+    await tester.enterText(fields.at(1), 'Clave2026');
+    expect(tester.state<FormState>(find.byType(Form)).validate(), isTrue);
+    await tester.pump();
+    expect(find.text('Ingresa un correo válido'), findsNothing);
+    expect(find.text('La contraseña debe tener al menos 8 caracteres'),
+        findsNothing);
+    await shot('CP-AUT-019');
+    await tester.tap(find.widgetWithText(FilledButton, 'Iniciar sesión'));
+    await network(tester);
+    expect(calls('/token'), hasLength(1));
+    expect(find.text('Bienvenido/a, Ana'), findsOneWidget);
+    await closeApp(tester);
+  });
+
+  testWidgets('CP-AUT-020', (tester) async {
+    await app(tester, const LoginScreen());
+    await loginWith(tester, 'correo@', '12345');
+    expect(find.text('Ingresa un correo válido'), findsOneWidget);
+    expect(find.text('La contraseña debe tener al menos 8 caracteres'),
+        findsOneWidget);
+    expect(requests, isEmpty);
+    await shot('CP-AUT-020');
+  });
+
+  testWidgets('CP-AUT-021', (tester) async {
+    await app(tester, const AuthGate());
+    await loginWith(tester, 'ana@correo.mx', 'Incorrecta99');
+    expect(calls('/token'), hasLength(1));
+    expect(find.text('El correo o la contraseña son incorrectos.'),
+        findsOneWidget);
+    expect(tester.widget<SnackBar>(find.byType(SnackBar)).backgroundColor,
+        Colors.red);
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(Supabase.instance.client.auth.currentSession, isNull);
+    await shot('CP-AUT-021');
+  });
+
+  testWidgets('CP-AUT-022', (tester) async {
+    await app(tester, const AuthGate());
+    await loginWith(tester, 'nadie@correo.mx', 'Clave2026');
+    expect(calls('/token'), hasLength(1));
+    expect(find.text('El correo o la contraseña son incorrectos.'),
+        findsOneWidget);
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(Supabase.instance.client.auth.currentSession, isNull);
+    await shot('CP-AUT-022');
+  });
+
+  testWidgets('CP-AUT-024', (tester) async {
+    await app(tester, const LoginScreen());
+    await tester.enterText(find.byType(TextFormField).at(1), 'Clave2026');
+    await tester.pump();
+    expect(obscured(tester, 1), isTrue);
+    await tester.tap(find.byIcon(Icons.visibility_outlined));
+    await tester.pump();
+    expect(obscured(tester, 1), isFalse);
+    expect(find.byIcon(Icons.visibility_off_outlined), findsOneWidget);
+    await shot('CP-AUT-024');
+    await tester.tap(find.byIcon(Icons.visibility_off_outlined));
+    await tester.pump();
+    expect(obscured(tester, 1), isTrue);
+    expect(find.byIcon(Icons.visibility_outlined), findsOneWidget);
+  });
+
+  testWidgets('CP-AUT-025', (tester) async {
+    await app(tester, const AuthGate());
+    await loginWith(tester, 'ana@correo.mx', 'Clave2026');
+    expect(find.text('Bienvenido/a, Ana'), findsOneWidget);
+    expect(find.text('EcoCuajimalpa'), findsOneWidget);
+    expect(find.text('Inicio'), findsWidgets);
+    await shot('CP-AUT-025');
+    await closeApp(tester);
+  });
+
+  testWidgets('CP-AUT-026', (tester) async {
+    await app(tester, const LoginScreen(), height: 2800);
+    expect(find.text('¿No tienes una cuenta? '), findsOneWidget);
+    await tester.tap(find.text('Crear cuenta'));
+    await tester.pumpAndSettle();
+    expect(find.byType(RegisterScreen), findsOneWidget);
+    expect(find.text('Únete a EcoCuajimalpa'), findsOneWidget);
+    await shot('CP-AUT-026');
+  });
+
+  // ---------------- Recuperar contraseña ----------------
+
+  testWidgets('CP-AUT-027', (tester) async {
+    await app(tester, const LoginScreen());
+    final Offset label = tester.getCenter(find.text('Contraseña'));
+    final Offset link = tester.getCenter(find.text('¿Olvidaste tu contraseña?'));
+    final Offset input = tester.getCenter(find.byType(TextFormField).at(1));
+    expect((label.dy - link.dy).abs(), lessThan(10));
+    expect(link.dx, greaterThan(label.dx));
+    expect(link.dy, lessThan(input.dy));
+    await shot('CP-AUT-027');
+  });
+
+  testWidgets('CP-AUT-029', (tester) async {
+    await openForgot(tester, email: 'ana@correo');
+    await tester.tap(find.text('Enviar código'));
+    await network(tester);
+    expect(find.text('Ingresa un correo válido'), findsOneWidget);
+    expect(calls('/recover'), isEmpty);
+    expect(find.text('Cambiar contraseña'), findsNothing);
+    await shot('CP-AUT-029');
+  });
+
+  testWidgets('CP-AUT-030', (tester) async {
+    await openForgot(tester);
+    await sendCode(tester);
+    final Finder fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(1), '123456');
+    await tester.enterText(fields.at(2), 'Nueva2026');
+    await tester.enterText(fields.at(3), 'Nueva2026');
+    expect(tester.state<FormState>(find.byType(Form)).validate(), isTrue);
+    await tester.pump();
+    for (final String m in <String>[
+      'Ingresa el código numérico que llegó a tu correo',
+      'Ingresa tu contraseña',
+      'La contraseña debe tener al menos 8 caracteres',
+      'Las contraseñas no coinciden',
+    ]) {
+      expect(find.text(m), findsNothing);
+    }
+    await shot('CP-AUT-030');
+    await tester.tap(find.text('Cambiar contraseña'));
+    await network(tester);
+    expect(calls('/verify'), hasLength(1));
+    expect(
+      find.text('Contraseña actualizada. ¡Bienvenido de nuevo!'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('CP-AUT-031', (tester) async {
+    await openForgot(tester);
+    await sendCode(tester);
+    await fillReset(tester, code: '');
+    expect(find.text('Ingresa el código numérico que llegó a tu correo'),
+        findsOneWidget);
+    expect(calls('/verify'), isEmpty);
+    expect(calls('/user'), isEmpty);
+    expect(find.byType(ForgotPasswordScreen), findsOneWidget);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await shot('CP-AUT-031');
+  });
+
+  testWidgets('CP-AUT-032', (tester) async {
+    await openForgot(tester);
+    await sendCode(tester);
+    await fillReset(tester, password: 'Nueva2026', confirm: 'Nueva2027');
+    expect(find.text('Las contraseñas no coinciden'), findsOneWidget);
+    expect(calls('/verify'), isEmpty);
+    expect(calls('/user'), isEmpty);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await shot('CP-AUT-032');
+  });
+
+  testWidgets('CP-AUT-033', (tester) async {
+    await openForgot(tester);
+    await sendCode(tester);
+    await fillReset(tester, password: 'Nueva2026');
+    expect(find.text('La contraseña debe tener al menos 8 caracteres'),
+        findsNothing);
+    final http.Request put =
+        calls('/user').firstWhere((r) => r.method == 'PUT');
+    expect((jsonDecode(put.body) as Map<String, dynamic>)['password'],
+        'Nueva2026');
+    expect(
+      find.text('Contraseña actualizada. ¡Bienvenido de nuevo!'),
+      findsOneWidget,
+    );
+    expect(find.byType(ForgotPasswordScreen), findsNothing);
+    await shot('CP-AUT-033');
+  });
+
+  testWidgets('CP-AUT-034', (tester) async {
+    await openForgot(tester);
+    await sendCode(tester);
+    await fillReset(tester, password: 'Nueva1');
+    expect(find.text('La contraseña debe tener al menos 8 caracteres'),
+        findsOneWidget);
+    expect(calls('/verify'), isEmpty);
+    expect(calls('/user'), isEmpty);
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await shot('CP-AUT-034');
+  });
+
+  testWidgets('CP-AUT-035', (tester) async {
+    await openForgot(tester);
+    await sendCode(tester);
+    await fillReset(tester, password: 'Clave2026');
+    final http.Request put =
+        calls('/user').firstWhere((r) => r.method == 'PUT');
+    expect((jsonDecode(put.body) as Map<String, dynamic>)['password'],
+        'Clave2026');
+    expect(find.byType(ForgotPasswordScreen), findsOneWidget);
+    // Lo que la app muestra en realidad (el criterio pide el texto en español).
+    expect(
+      find.text('New password should be different from the old password.'),
+      findsOneWidget,
+    );
+    expect(find.text('La nueva contraseña debe ser distinta a la anterior.'),
+        findsNothing);
+    await shot('CP-AUT-035');
+  });
+
+  testWidgets('CP-AUT-036', (tester) async {
+    await app(tester, const AuthGate());
+    await tester.enterText(find.byType(TextFormField).at(0), 'ana@correo.mx');
+    await tester.tap(find.text('¿Olvidaste tu contraseña?'));
+    await tester.pumpAndSettle();
+    await sendCode(tester);
+    await fillReset(tester, code: '123456', password: 'Nueva2026');
+    expect(calls('/verify'), hasLength(1));
+    expect(
+      find.text('Contraseña actualizada. ¡Bienvenido de nuevo!'),
+      findsOneWidget,
+    );
+    expect(find.byType(ForgotPasswordScreen), findsNothing);
+    expect(find.byType(LoginScreen), findsNothing);
+    expect(find.text('Bienvenido/a, Ana'), findsOneWidget);
+    await shot('CP-AUT-036');
+    await closeApp(tester);
+  });
+
+  testWidgets('CP-AUT-037', (tester) async {
+    await openForgot(tester);
+    await sendCode(tester);
+    await fillReset(tester, code: '000000', password: 'Nueva2026');
+    expect(calls('/verify'), hasLength(1));
+    expect(calls('/user').where((r) => r.method == 'PUT'), isEmpty);
+    expect(
+      find.text('El código no es válido o ya expiró. Solicita uno nuevo.'),
+      findsOneWidget,
+    );
+    expect(find.byType(ForgotPasswordScreen), findsOneWidget);
+    expect(Supabase.instance.client.auth.currentSession, isNull);
+    await shot('CP-AUT-037');
+  });
+
+  testWidgets('CP-AUT-038', (tester) async {
+    await openForgot(tester);
+    expect(find.text('Recuperar contraseña'), findsOneWidget);
+    expect(field(tester, 0).controller?.text, 'ana@correo.mx');
+    expect(find.text('ana@correo.mx'), findsOneWidget);
+    await shot('CP-AUT-038');
+  });
+
+  testWidgets('CP-AUT-039', (tester) async {
+    await openForgot(tester);
+    expect(find.byType(TextFormField), findsOneWidget);
+    await sendCode(tester);
+    final Map<String, dynamic> body =
+        jsonDecode(calls('/recover').single.body) as Map<String, dynamic>;
+    expect(body['email'], 'ana@correo.mx');
+    expect(field(tester, 0).enabled, isFalse);
+    expect(find.byType(TextFormField), findsNWidgets(4));
+    expect(find.text('Código de verificación'), findsOneWidget);
+    expect(find.text('Nueva contraseña'), findsOneWidget);
+    expect(find.text('Confirmar contraseña'), findsOneWidget);
+    expect(
+      find.text(
+        'Si el correo está registrado, te enviamos un código de recuperación.',
+      ),
+      findsOneWidget,
+    );
+    await shot('CP-AUT-039');
+  });
+
+  testWidgets('CP-AUT-040', (tester) async {
+    await openForgot(tester);
+    await sendCode(tester);
+    await tester.tap(find.text('Usar otro correo o reenviar código'));
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    expect(field(tester, 0).enabled, isTrue);
+    expect(find.byType(TextFormField), findsOneWidget);
+    expect(find.text('Enviar código'), findsOneWidget);
+    expect(find.text('Usar otro correo o reenviar código'), findsNothing);
+    expect(find.text('ana@correo.mx'), findsOneWidget);
+    await shot('CP-AUT-040');
+  });
+
+  // ---------------- Cerrar sesión ----------------
+
+  testWidgets('CP-AUT-041', (tester) async {
+    await app(tester, ProfileScreen(repository: FakeProfileRepository(ana)),
+        height: 2800);
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -800));
+    await tester.pumpAndSettle();
+    expect(find.text('Cerrar sesión'), findsOneWidget);
+    expect(find.text('ana@correo.mx'), findsWidgets);
+    expect(find.byIcon(Icons.logout_rounded), findsOneWidget);
+    await shot('CP-AUT-041');
+  });
+
+  testWidgets('CP-AUT-042', (tester) async {
+    final FakeProfileRepository repo = FakeProfileRepository(ana);
+    await app(tester, ProfileScreen(repository: repo), height: 2800);
+    await tester.ensureVisible(find.text('Cerrar sesión'));
+    await tester.tap(find.text('Cerrar sesión'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('¿Cerrar sesión?'), findsOneWidget);
+    expect(repo.signedOut, isFalse);
+    await shot('CP-AUT-042');
+  });
+
+  testWidgets('CP-AUT-043', (tester) async {
+    final FakeProfileRepository repo = FakeProfileRepository(ana);
+    await app(tester, ProfileScreen(repository: repo), height: 2800);
+    await tester.ensureVisible(find.text('Cerrar sesión'));
+    await tester.tap(find.text('Cerrar sesión'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancelar'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(repo.signedOut, isFalse);
+    expect(find.byType(ProfileScreen), findsOneWidget);
+    expect(find.text('Ana Pérez'), findsOneWidget);
+    await shot('CP-AUT-043');
+  });
+
+  testWidgets('CP-AUT-044', (tester) async {
+    await app(tester, const AuthGate());
+    await loginWith(tester, 'ana@correo.mx', 'Clave2026');
+    await tester.tap(find.text('Perfil').last);
+    await network(tester);
+    expect(find.byType(ProfileScreen), findsOneWidget);
+    await tester.ensureVisible(find.text('Cerrar sesión'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cerrar sesión'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Cerrar sesión'));
+    await network(tester);
+    expect(calls('/logout'), hasLength(1));
+    expect(Supabase.instance.client.auth.currentSession, isNull);
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(find.text('Inicia sesión para continuar'), findsOneWidget);
+    expect(find.byType(ProfileScreen), findsNothing);
+    await shot('CP-AUT-044');
+    await closeApp(tester);
+  });
+
+  testWidgets('CP-AUT-046', (tester) async {
+    await app(tester, ProfileScreen(repository: FakeProfileRepository(ana)),
+        height: 2800);
+    await tester.ensureVisible(find.text('Cerrar sesión'));
+    await tester.tap(find.text('Cerrar sesión'));
+    await tester.pumpAndSettle();
+    final Finder dialog = find.byType(AlertDialog);
+    expect(find.descendant(of: dialog, matching: find.text('¿Cerrar sesión?')),
+        findsOneWidget);
+    expect(
+      find.descendant(
+        of: dialog,
+        matching: find.text(
+          'Tendrás que volver a ingresar tu correo y contraseña.',
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(find.descendant(of: dialog, matching: find.text('Cancelar')),
+        findsOneWidget);
+    final FilledButton confirm = tester.widget<FilledButton>(
+      find.descendant(of: dialog, matching: find.byType(FilledButton)),
+    );
+    expect((confirm.child! as Text).data, 'Cerrar sesión');
+    await shot('CP-AUT-046');
+  });
+}

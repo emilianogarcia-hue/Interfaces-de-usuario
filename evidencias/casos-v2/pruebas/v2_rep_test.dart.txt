@@ -1,0 +1,882 @@
+// Casos de la matriz v2 (Hacer reporte / Mis reportes) con captura de
+// evidencia. Servidor, GPS y galería simulados. No es parte del repo.
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:ecocuajimalpa/core/services/location_service.dart';
+import 'package:ecocuajimalpa/features/reports/data/report.dart';
+import 'package:ecocuajimalpa/features/reports/data/reports_repository.dart';
+import 'package:ecocuajimalpa/features/reports/presentation/my_reports_screen.dart';
+import 'package:ecocuajimalpa/features/reports/presentation/report_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator_platform_interface/geolocator_platform_interface.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'package:plugin_platform_interface/plugin_platform_interface.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../helpers.dart';
+import 'dispositivo_test.dart' show FakePickerPlatform, photo;
+import 'shots_test.dart' show loadFonts, open, theme, phone;
+
+Future<void> shot2(String id) async {
+  await expectLater(find.byType(MaterialApp), matchesGoldenFile('out2/$id.png'));
+}
+
+// ---------------------------------------------------------------- servidor
+const String uid = '6f1c2b1e-0000-4000-8000-000000000001';
+const String otherUid = '9a9a9a9a-0000-4000-8000-000000000002';
+
+final List<http.Request> requests = <http.Request>[];
+http.Response Function(http.Request request) server = (_) =>
+    http.Response('{}', 200);
+
+http.Response json(Object body, [int status = 200]) => http.Response(
+  jsonEncode(body),
+  status,
+  headers: <String, String>{'content-type': 'application/json; charset=utf-8'},
+);
+
+Map<String, dynamic> row(
+  int id,
+  String userId,
+  String category,
+  String colony,
+  String description, {
+  String status = 'pendiente',
+  String createdAt = '2026-10-05T15:00:00Z',
+}) => <String, dynamic>{
+  'id': id,
+  'user_id': userId,
+  'folio': 'ECO-2026-${id.toString().padLeft(4, '0')}',
+  'category': category,
+  'colony': colony,
+  'description': description,
+  'status': status,
+  'created_at': createdAt,
+  'latitude': null,
+  'longitude': null,
+  'photo_url': null,
+};
+
+/// Tabla `reports` simulada que respeta el filtro user_id=eq.<id>.
+List<Map<String, dynamic>> table = <Map<String, dynamic>>[];
+
+http.Response reportsServer(http.Request request) {
+  if (!request.url.path.endsWith('/rest/v1/reports')) {
+    return json(<String, dynamic>{});
+  }
+  if (request.method == 'POST') {
+    final Map<String, dynamic> body =
+        jsonDecode(request.body) as Map<String, dynamic>;
+    final int id = 42;
+    final Map<String, dynamic> inserted = row(
+      id,
+      body['user_id'] as String,
+      body['category'] as String,
+      body['colony'] as String,
+      body['description'] as String,
+      createdAt: DateTime.now().toUtc().toIso8601String(),
+    );
+    table.insert(0, inserted);
+    return json(inserted, 201);
+  }
+  final String? filter = request.url.queryParameters['user_id'];
+  final List<Map<String, dynamic>> rows = table
+      .where((r) => filter == null || filter == 'eq.${r['user_id']}')
+      .toList();
+  return json(rows);
+}
+
+Future<void> network(WidgetTester tester) async {
+  for (int i = 0; i < 20; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  await tester.pumpAndSettle();
+}
+
+// ------------------------------------------------------------- dispositivo
+class CountingLocationService extends LocationService {
+  CountingLocationService();
+  int calls = 0;
+
+  @override
+  Future<GeoPoint> getCurrentLocation() async {
+    calls++;
+    return const GeoPoint(19.36721, -99.29214);
+  }
+}
+
+/// GPS encendido; el permiso empieza sin otorgar y el usuario lo acepta.
+class AcceptingGeolocator extends GeolocatorPlatform
+    with MockPlatformInterfaceMixin {
+  int permissionRequests = 0;
+
+  @override
+  Future<bool> isLocationServiceEnabled() async => true;
+
+  @override
+  Future<LocationPermission> checkPermission() async =>
+      LocationPermission.denied;
+
+  @override
+  Future<LocationPermission> requestPermission() async {
+    permissionRequests++;
+    return LocationPermission.whileInUse;
+  }
+
+  @override
+  Future<Position> getCurrentPosition({
+    LocationSettings? locationSettings,
+  }) async => Position(
+    latitude: 19.36721,
+    longitude: -99.29214,
+    timestamp: DateTime(2026, 10, 9),
+    accuracy: 5,
+    altitude: 0,
+    altitudeAccuracy: 0,
+    heading: 0,
+    headingAccuracy: 0,
+    speed: 0,
+    speedAccuracy: 0,
+  );
+}
+
+/// Repositorio cuya recarga queda pendiente hasta completar [next].
+class SlowReportsRepository implements ReportsRepository {
+  SlowReportsRepository(this.first);
+
+  final List<Report> first;
+  Completer<List<Report>>? next;
+  int calls = 0;
+
+  @override
+  Future<List<Report>> myReports({int? limit}) {
+    calls++;
+    if (calls == 1) return Future<List<Report>>.value(first);
+    next = Completer<List<Report>>();
+    return next!.future;
+  }
+
+  @override
+  Future<Report> submit(NewReport report) => throw UnimplementedError();
+}
+
+// ---------------------------------------------------------------- utilidades
+Finder get continuar => find.widgetWithText(FilledButton, 'Continuar');
+
+bool enabled(WidgetTester tester, Finder button) =>
+    tester.widget<FilledButton>(button).onPressed != null;
+
+Future<void> chooseProblem(WidgetTester tester, [String p = 'Basura acumulada']) async {
+  await tester.tap(find.text(p));
+  await tester.pump();
+}
+
+Future<void> toStep2(WidgetTester tester) async {
+  await chooseProblem(tester);
+  await tester.tap(continuar);
+  await tester.pumpAndSettle();
+}
+
+Future<void> fillStep2(WidgetTester tester) async {
+  await tester.tap(find.text('Santa Fe').first);
+  await tester.enterText(
+    find.byType(TextField),
+    'Bolsas de basura acumuladas en la esquina',
+  );
+  await tester.pump();
+  FocusManager.instance.primaryFocus?.unfocus();
+  await tester.pumpAndSettle();
+}
+
+Future<void> toStep3(WidgetTester tester) async {
+  await toStep2(tester);
+  await fillStep2(tester);
+  await tester.tap(continuar);
+  await tester.pumpAndSettle();
+}
+
+Future<void> settleImages(WidgetTester tester) async {
+  for (int i = 0; i < 10; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+}
+
+Finder checkIn(String title) => find.descendant(
+  of: find.ancestor(of: find.text(title), matching: find.byType(InkWell)).first,
+  matching: find.byIcon(Icons.check_circle_rounded),
+);
+
+Report rep(int id, String category, String colony, ReportStatus status,
+        DateTime date) =>
+    Report(
+      id: id,
+      folio: 'ECO-2026-${id.toString().padLeft(4, '0')}',
+      category: category,
+      colony: colony,
+      description: 'Descripción del reporte $id',
+      status: status,
+      createdAt: date,
+    );
+
+void main() {
+  setUpAll(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('plugins.flutter.io/path_provider'),
+          (call) async => Directory.systemTemp.createTempSync('eco').path,
+        );
+    await loadFonts();
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await Supabase.initialize(
+      url: 'https://prueba.supabase.co',
+      anonKey: 'anon-key-de-prueba',
+      httpClient: MockClient((request) async {
+        requests.add(request);
+        if (request.url.path.endsWith('/auth/v1/token')) {
+          return json(<String, dynamic>{
+            'access_token': 'token-de-prueba',
+            'token_type': 'bearer',
+            'expires_in': 3600,
+            'expires_at': 4102444800,
+            'refresh_token': 'refresh-de-prueba',
+            'user': <String, dynamic>{
+              'id': uid,
+              'aud': 'authenticated',
+              'role': 'authenticated',
+              'email': 'ana@correo.mx',
+              'app_metadata': <String, dynamic>{},
+              'user_metadata': <String, dynamic>{},
+              'created_at': '2026-10-01T00:00:00Z',
+            },
+          });
+        }
+        final http.Response response = server(request);
+        return http.Response.bytes(
+          response.bodyBytes,
+          response.statusCode,
+          headers: response.headers,
+          request: request,
+        );
+      }),
+      authOptions: const FlutterAuthClientOptions(
+        detectSessionInUri: false,
+        autoRefreshToken: false,
+        localStorage: EmptyLocalStorage(),
+      ),
+    );
+    await Supabase.instance.client.auth.signInWithPassword(
+      email: 'ana@correo.mx',
+      password: 'claveSegura1',
+    );
+  });
+
+  setUp(() {
+    requests.clear();
+    table = <Map<String, dynamic>>[];
+    server = reportsServer;
+  });
+
+  // ------------------------------------------------------------ HU-04
+  testWidgets('CP-REP-001', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    expect(find.text('Paso 1 de 3'), findsOneWidget);
+    await chooseProblem(tester);
+    expect(enabled(tester, continuar), isTrue);
+    await tester.tap(continuar);
+    await tester.pumpAndSettle();
+    expect(find.text('Paso 2 de 3'), findsOneWidget);
+    expect(find.text('¿Dónde ocurre?'), findsOneWidget);
+    await fillStep2(tester);
+    expect(enabled(tester, continuar), isTrue);
+    await tester.tap(continuar);
+    await tester.pumpAndSettle();
+    expect(find.text('Paso 3 de 3'), findsOneWidget);
+    expect(find.text('Agrega una foto (opcional)'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Enviar reporte'), findsOneWidget);
+    await shot2('CP-REP-001');
+  });
+
+  testWidgets('CP-REP-002', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await toStep2(tester);
+    await tester.enterText(
+      find.byType(TextField),
+      'Bolsas de basura acumuladas en la esquina',
+    );
+    await tester.pump();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(enabled(tester, continuar), isFalse);
+    await tester.tap(continuar);
+    await tester.pumpAndSettle();
+    expect(find.text('Paso 2 de 3'), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
+    await shot2('CP-REP-002');
+  });
+
+  testWidgets('CP-REP-003', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    for (final String p in <String>[
+      'Basura acumulada',
+      'Zona descuidada',
+      'Área verde dañada',
+      'Problema de agua',
+      'Árbol caído/dañado',
+      'Otro problema',
+    ]) {
+      expect(find.text(p), findsOneWidget, reason: p);
+    }
+    expect(find.text('¿Qué tipo de problema es?'), findsOneWidget);
+    await shot2('CP-REP-003');
+  });
+
+  testWidgets('CP-REP-004', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    expect(enabled(tester, continuar), isFalse);
+    await tester.tap(continuar);
+    await tester.pumpAndSettle();
+    expect(find.text('Paso 1 de 3'), findsOneWidget);
+    expect(find.text('¿Dónde ocurre?'), findsNothing);
+    await shot2('CP-REP-004');
+  });
+
+  testWidgets('CP-REP-005', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await toStep2(tester);
+    await tester.tap(find.text('Santa Fe').first);
+    await tester.pump();
+    expect(enabled(tester, continuar), isFalse);
+    await tester.enterText(find.byType(TextField), 'Bolsas de basura en la esquina');
+    await tester.pump();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(find.text('30/500 · mín. 10 caracteres'), findsOneWidget);
+    expect(enabled(tester, continuar), isTrue);
+    await shot2('CP-REP-005');
+  });
+
+  testWidgets('CP-REP-006', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await toStep2(tester);
+    await tester.tap(find.text('Santa Fe').first);
+    await tester.enterText(find.byType(TextField), 'Basura');
+    await tester.pump();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(find.text('6/500 · mín. 10 caracteres'), findsOneWidget);
+    expect(enabled(tester, continuar), isFalse);
+    await tester.tap(continuar);
+    await tester.pumpAndSettle();
+    expect(find.text('Paso 2 de 3'), findsOneWidget);
+    await shot2('CP-REP-006');
+  });
+
+  testWidgets('CP-REP-007', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await toStep2(tester);
+    await tester.tap(find.text('Santa Fe').first);
+    await tester.enterText(find.byType(TextField), 'a' * 600);
+    await tester.pump();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    final TextField field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.controller!.text.length, 500);
+    expect(find.text('500/500 · mín. 10 caracteres'), findsOneWidget);
+    await tester.ensureVisible(find.text('500/500 · mín. 10 caracteres'));
+    await tester.pumpAndSettle();
+    await shot2('CP-REP-007');
+  });
+
+  testWidgets('CP-REP-008', (tester) async {
+    final FakeReportsRepository repository = FakeReportsRepository();
+    await open(tester, ReportScreen(repository: repository));
+    await toStep3(tester);
+    expect(find.text('No incluido'), findsOneWidget);
+    expect(find.text('Sin foto'), findsOneWidget);
+    await shot2('CP-REP-008');
+    await tester.tap(find.text('Enviar reporte'));
+    await tester.pumpAndSettle();
+    expect(find.text('¡Reporte enviado!'), findsOneWidget);
+    expect(repository.submitted.single.latitude, isNull);
+    expect(repository.submitted.single.longitude, isNull);
+    expect(repository.submitted.single.photoBytes, isNull);
+  });
+
+  testWidgets('CP-REP-009', (tester) async {
+    final Uint8List twoMb = Uint8List(2 * 1024 * 1024)..setAll(0, photo);
+    final FakePickerPlatform picker = FakePickerPlatform(twoMb, 'foto.jpg');
+    ImagePickerPlatform.instance = picker;
+    final FakeReportsRepository repository = FakeReportsRepository();
+    await open(tester, ReportScreen(repository: repository));
+    await toStep3(tester);
+    await tester.tap(find.text('Tomar foto o seleccionar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Elegir de la galería'));
+    await tester.pumpAndSettle();
+    await settleImages(tester);
+    expect(find.text('Foto seleccionada'), findsOneWidget);
+    expect(find.text('Toca para cambiarla o quitarla'), findsOneWidget);
+    expect(find.text('Incluida'), findsOneWidget);
+    expect(find.byType(Image), findsOneWidget);
+    expect(find.text('La foto supera los 10 MB.'), findsNothing);
+    await shot2('CP-REP-009');
+    await tester.tap(find.text('Enviar reporte'));
+    await tester.pumpAndSettle();
+    expect(repository.submitted.single.photoBytes!.length, 2 * 1024 * 1024);
+  });
+
+  testWidgets('CP-REP-010', (tester) async {
+    final Uint8List big = Uint8List(ReportScreen.maxPhotoBytes + 1024 * 1024)
+      ..setAll(0, photo);
+    ImagePickerPlatform.instance = FakePickerPlatform(big, 'grande.jpg');
+    final FakeReportsRepository repository = FakeReportsRepository();
+    await open(tester, ReportScreen(repository: repository));
+    await toStep3(tester);
+    await tester.tap(find.text('Tomar foto o seleccionar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Elegir de la galería'));
+    await tester.pumpAndSettle();
+    expect(find.text('La foto supera los 10 MB.'), findsOneWidget);
+    expect(find.text('Foto seleccionada'), findsNothing);
+    expect(find.text('Tomar foto o seleccionar'), findsOneWidget);
+    expect(find.text('Sin foto'), findsOneWidget);
+    await shot2('CP-REP-010');
+  });
+
+  testWidgets('CP-REP-011', (tester) async {
+    await open(tester, const ReportScreen());
+    await toStep3(tester);
+    await tester.tap(find.text('Enviar reporte'));
+    await network(tester);
+    final http.Request insert = requests.singleWhere(
+      (r) => r.method == 'POST' && r.url.path.endsWith('/rest/v1/reports'),
+    );
+    final Map<String, dynamic> body =
+        jsonDecode(insert.body) as Map<String, dynamic>;
+    expect(body['category'], 'Basura acumulada');
+    expect(body['colony'], 'Santa Fe');
+    expect(body['user_id'], uid);
+    expect(body.containsKey('status'), isFalse);
+    expect(find.text('¡Reporte enviado!'), findsOneWidget);
+    expect(find.text('Pendiente · Folio #ECO-2026-0042'), findsOneWidget);
+    expect(
+      RegExp(r'^ECO-\d{4}-\d{4}$').hasMatch(table.single['folio'] as String),
+      isTrue,
+    );
+    await shot2('CP-REP-011');
+  });
+
+  testWidgets('CP-REP-012', (tester) async {
+    final FakeReportsRepository repository = FakeReportsRepository(fail: true);
+    await open(tester, ReportScreen(repository: repository));
+    await toStep3(tester);
+    await tester.tap(find.text('Enviar reporte'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text(
+        'No se pudo enviar el reporte. Revisa tu conexión e inténtalo de nuevo.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('¡Reporte enviado!'), findsNothing);
+    expect(find.text('Paso 3 de 3'), findsOneWidget);
+    expect(find.text('Basura acumulada'), findsOneWidget);
+    expect(find.text('Santa Fe'), findsOneWidget);
+    expect(find.text('Bolsas de basura acumuladas en la esquina'), findsOneWidget);
+    expect(
+      enabled(tester, find.widgetWithText(FilledButton, 'Enviar reporte')),
+      isTrue,
+    );
+    await shot2('CP-REP-012');
+  });
+
+  testWidgets('CP-REP-013', (tester) async {
+    final FakeReportsRepository repository = FakeReportsRepository();
+    phone(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: TextButton(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (context) => ReportScreen(repository: repository),
+                  ),
+                ),
+                child: const Text('Inicio'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Inicio'));
+    await tester.pumpAndSettle();
+    await chooseProblem(tester);
+    await tester.tap(find.text('Cancelar'));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Cancelar el reporte?'), findsOneWidget);
+    expect(
+      find.text('Los datos capturados en este reporte se perderán.'),
+      findsOneWidget,
+    );
+    expect(find.text('Seguir editando'), findsOneWidget);
+    expect(find.text('Cancelar reporte'), findsOneWidget);
+    await shot2('CP-REP-013');
+    await tester.tap(find.text('Cancelar reporte'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ReportScreen), findsNothing);
+    expect(find.text('Inicio'), findsOneWidget);
+    expect(repository.submitted, isEmpty);
+  });
+
+  testWidgets('CP-REP-014', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await chooseProblem(tester);
+    await tester.tap(find.text('Cancelar'));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Cancelar el reporte?'), findsOneWidget);
+    await tester.tap(find.text('Seguir editando'));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Cancelar el reporte?'), findsNothing);
+    expect(find.byType(ReportScreen), findsOneWidget);
+    expect(find.text('Paso 1 de 3'), findsOneWidget);
+    expect(checkIn('Basura acumulada'), findsOneWidget);
+    expect(enabled(tester, continuar), isTrue);
+    await shot2('CP-REP-014');
+  });
+
+  testWidgets('CP-REP-015', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    expect(find.text('Paso 1 de 3'), findsOneWidget);
+    await toStep2(tester);
+    expect(find.text('Paso 2 de 3'), findsOneWidget);
+    expect(find.text('Paso 1 de 3'), findsNothing);
+    await fillStep2(tester);
+    await tester.tap(continuar);
+    await tester.pumpAndSettle();
+    expect(find.text('Paso 3 de 3'), findsOneWidget);
+    expect(find.text('Paso 2 de 3'), findsNothing);
+    await shot2('CP-REP-015');
+  });
+
+  testWidgets('CP-REP-016', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    expect(find.byIcon(Icons.check_circle_rounded), findsNothing);
+    await chooseProblem(tester);
+    expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);
+    expect(checkIn('Basura acumulada'), findsOneWidget);
+    await chooseProblem(tester, 'Problema de agua');
+    expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);
+    expect(checkIn('Problema de agua'), findsOneWidget);
+    expect(checkIn('Basura acumulada'), findsNothing);
+    await tester.pumpAndSettle();
+    await shot2('CP-REP-016');
+  });
+
+  testWidgets('CP-REP-017', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await tester.tap(find.byIcon(Icons.view_list_rounded));
+    await tester.pumpAndSettle();
+    expect(find.byType(GridView), findsNothing);
+    final double x1 = tester.getTopLeft(find.text('Basura acumulada')).dx;
+    final double x2 = tester.getTopLeft(find.text('Zona descuidada')).dx;
+    expect(x1, x2);
+    expect(
+      tester.getTopLeft(find.text('Zona descuidada')).dy,
+      greaterThan(tester.getTopLeft(find.text('Basura acumulada')).dy),
+    );
+    await shot2('CP-REP-017');
+    await tester.tap(find.byIcon(Icons.grid_view_rounded));
+    await tester.pumpAndSettle();
+    expect(find.byType(GridView), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('Zona descuidada')).dx,
+      greaterThan(tester.getTopLeft(find.text('Basura acumulada')).dx),
+    );
+    expect(
+      tester.getTopLeft(find.text('Zona descuidada')).dy,
+      tester.getTopLeft(find.text('Basura acumulada')).dy,
+    );
+  });
+
+  testWidgets('CP-REP-018', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await toStep2(tester);
+    expect(find.text('0/500 · mín. 10 caracteres'), findsOneWidget);
+    final FilledButton button = tester.widget<FilledButton>(continuar);
+    expect(button.onPressed, isNull);
+    final Color? bg = button.style!.backgroundColor!.resolve(<WidgetState>{
+      WidgetState.disabled,
+    });
+    expect(bg, const Color(0xFFD2DBD7));
+    await tester.tap(continuar);
+    await tester.pumpAndSettle();
+    expect(find.text('Paso 2 de 3'), findsOneWidget);
+    await shot2('CP-REP-018');
+  });
+
+  testWidgets('CP-REP-019', (tester) async {
+    final AcceptingGeolocator gps = AcceptingGeolocator();
+    GeolocatorPlatform.instance = gps;
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await toStep2(tester);
+    await tester.tap(find.text('Agregar mi ubicación (opcional)'));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Activar tu ubicación?'), findsOneWidget);
+    await tester.tap(find.text('Activar'));
+    await tester.pumpAndSettle();
+    expect(gps.permissionRequests, 1);
+    expect(find.text('Ubicación agregada al reporte.'), findsOneWidget);
+    expect(find.text('Ubicación agregada'), findsOneWidget);
+    expect(
+      find.text('19.36721, -99.29214 · toca para quitarla'),
+      findsOneWidget,
+    );
+    await shot2('CP-REP-019');
+  });
+
+  testWidgets('CP-REP-020', (tester) async {
+    final CountingLocationService location = CountingLocationService();
+    await open(
+      tester,
+      ReportScreen(
+        repository: FakeReportsRepository(),
+        locationService: location,
+      ),
+    );
+    await toStep2(tester);
+    await tester.tap(find.text('Agregar mi ubicación (opcional)'));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Activar tu ubicación?'), findsOneWidget);
+    await tester.tap(find.text('Ahora no'));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Activar tu ubicación?'), findsNothing);
+    expect(location.calls, 0);
+    expect(find.text('Agregar mi ubicación (opcional)'), findsOneWidget);
+    expect(find.text('Ayuda a ubicar el problema con precisión'), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
+    await shot2('CP-REP-020');
+    await fillStep2(tester);
+    await tester.tap(continuar);
+    await tester.pumpAndSettle();
+    expect(find.text('No incluido'), findsOneWidget);
+  });
+
+  testWidgets('CP-REP-021', (tester) async {
+    final FakePickerPlatform picker = FakePickerPlatform(photo, 'foto.jpg');
+    ImagePickerPlatform.instance = picker;
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await toStep3(tester);
+    await tester.tap(find.text('Tomar foto o seleccionar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Tomar foto'), findsOneWidget);
+    expect(find.text('Elegir de la galería'), findsOneWidget);
+    expect(find.text('Quitar foto'), findsNothing);
+    expect(picker.sources, isEmpty);
+    await shot2('CP-REP-021');
+  });
+
+  testWidgets('CP-REP-022', (tester) async {
+    await open(tester, const ReportScreen());
+    await toStep3(tester);
+    await tester.tap(find.text('Enviar reporte'));
+    await network(tester);
+    expect(find.text('¡Reporte enviado!'), findsOneWidget);
+    expect(find.text('Ver mis reportes'), findsOneWidget);
+    await tester.tap(find.text('Ver mis reportes'));
+    await network(tester);
+    expect(find.byType(MyReportsScreen), findsOneWidget);
+    expect(find.text('Mis reportes'), findsOneWidget);
+    expect(find.byType(ReportCard), findsOneWidget);
+    expect(find.text('Folio #ECO-2026-0042 · Santa Fe'), findsOneWidget);
+    expect(find.text('Basura acumulada'), findsOneWidget);
+    expect(find.text('Pendiente'), findsOneWidget);
+    await shot2('CP-REP-022');
+  });
+
+  // ------------------------------------------------------------ HU-05
+  testWidgets('CP-REP-023', (tester) async {
+    table = <Map<String, dynamic>>[
+      row(7, uid, 'Problema de agua', 'El Yaqui', 'Fuga de agua en la banqueta',
+          createdAt: '2026-10-03T15:00:00Z'),
+      row(5, uid, 'Basura acumulada', 'Santa Fe', 'Bolsas en la esquina',
+          status: 'en_proceso', createdAt: '2026-09-28T15:00:00Z'),
+      row(6, otherUid, 'Árbol caído/dañado', 'Contadero', 'Rama caída en la calle'),
+    ];
+    await open(tester, const MyReportsScreen());
+    await network(tester);
+    final http.Request get = requests.singleWhere(
+      (r) => r.method == 'GET' && r.url.path.endsWith('/rest/v1/reports'),
+    );
+    expect(get.url.queryParameters['user_id'], 'eq.$uid');
+    expect(find.byType(ReportCard), findsNWidgets(2));
+    expect(find.text('Folio #ECO-2026-0007 · El Yaqui'), findsOneWidget);
+    expect(find.text('Folio #ECO-2026-0005 · Santa Fe'), findsOneWidget);
+    await shot2('CP-REP-023');
+  });
+
+  testWidgets('CP-REP-024', (tester) async {
+    table = <Map<String, dynamic>>[
+      row(8, otherUid, 'Árbol caído/dañado', 'Contadero', 'Rama caída en la calle'),
+      row(9, otherUid, 'Zona descuidada', 'Palo Alto', 'Lote baldío con maleza'),
+      row(5, uid, 'Basura acumulada', 'Santa Fe', 'Bolsas en la esquina'),
+    ];
+    await open(tester, const MyReportsScreen());
+    await network(tester);
+    final http.Request get = requests.singleWhere(
+      (r) => r.method == 'GET' && r.url.path.endsWith('/rest/v1/reports'),
+    );
+    expect(get.url.queryParameters['user_id'], 'eq.$uid');
+    expect(find.byType(ReportCard), findsOneWidget);
+    expect(find.textContaining('ECO-2026-0008'), findsNothing);
+    expect(find.textContaining('ECO-2026-0009'), findsNothing);
+    expect(find.text('Árbol caído/dañado'), findsNothing);
+    expect(find.text('Zona descuidada'), findsNothing);
+    await shot2('CP-REP-024');
+  });
+
+  testWidgets('CP-REP-025', (tester) async {
+    await open(
+      tester,
+      MyReportsScreen(
+        repository: FakeReportsRepository(
+          reports: <Report>[
+            rep(12, 'Problema de agua', 'El Yaqui', ReportStatus.pendiente,
+                DateTime(2026, 9, 14, 10)),
+          ],
+        ),
+      ),
+    );
+    expect(find.text('Problema de agua'), findsOneWidget);
+    expect(find.text('Folio #ECO-2026-0012 · El Yaqui'), findsOneWidget);
+    expect(find.text('14 sep 2026'), findsOneWidget);
+    expect(find.text('Pendiente'), findsOneWidget);
+    await shot2('CP-REP-025');
+  });
+
+  testWidgets('CP-REP-026', (tester) async {
+    final SlowReportsRepository repository = SlowReportsRepository(<Report>[
+      rep(5, 'Basura acumulada', 'Santa Fe', ReportStatus.pendiente,
+          DateTime(2026, 10, 2, 10)),
+    ]);
+    await open(tester, MyReportsScreen(repository: repository));
+    expect(find.text('Pendiente'), findsOneWidget);
+    await tester.fling(find.byType(ReportCard), const Offset(0, 400), 1000);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    repository.next!.complete(<Report>[
+      rep(5, 'Basura acumulada', 'Santa Fe', ReportStatus.enProceso,
+          DateTime(2026, 10, 2, 10)),
+    ]);
+    await tester.pumpAndSettle();
+    expect(find.text('En proceso'), findsOneWidget);
+    expect(find.text('Pendiente'), findsNothing);
+    final Text chip = tester.widget<Text>(find.text('En proceso'));
+    expect(chip.style!.color, const Color(0xFF126CFF));
+    await shot2('CP-REP-026');
+  });
+
+  testWidgets('CP-REP-027', (tester) async {
+    await open(tester, MyReportsScreen(repository: FakeReportsRepository()));
+    expect(find.text('Aún no tienes reportes'), findsOneWidget);
+    expect(
+      find.text(
+        'Cuando reportes un problema aparecerá aquí con su estado de atención.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.byType(ReportCard), findsNothing);
+    await shot2('CP-REP-027');
+  });
+
+  testWidgets('CP-REP-028', (tester) async {
+    await open(
+      tester,
+      MyReportsScreen(
+        repository: FakeReportsRepository(
+          reports: <Report>[
+            rep(14, 'Problema de agua', 'El Yaqui', ReportStatus.enProceso,
+                DateTime(2026, 9, 30, 9)),
+            rep(13, 'Basura acumulada', 'Santa Fe', ReportStatus.pendiente,
+                DateTime(2026, 9, 20, 9)),
+            rep(11, 'Árbol caído/dañado', 'Contadero', ReportStatus.resuelto,
+                DateTime(2026, 8, 20, 9)),
+            rep(10, 'Zona descuidada', 'Palo Alto', ReportStatus.rechazado,
+                DateTime(2026, 8, 2, 9)),
+          ],
+        ),
+      ),
+    );
+    expect(find.byType(ReportCard), findsNWidgets(4));
+    for (final String folio in <String>['0014', '0013', '0011', '0010']) {
+      expect(
+        find.ancestor(
+          of: find.textContaining('ECO-2026-$folio'),
+          matching: find.byType(ReportCard),
+        ),
+        findsOneWidget,
+      );
+    }
+    await shot2('CP-REP-028');
+  });
+
+  testWidgets('CP-REP-029', (tester) async {
+    final SlowReportsRepository repository = SlowReportsRepository(<Report>[
+      rep(5, 'Basura acumulada', 'Santa Fe', ReportStatus.pendiente,
+          DateTime(2026, 10, 2, 10)),
+    ]);
+    await open(tester, MyReportsScreen(repository: repository));
+    expect(find.byType(ReportCard), findsOneWidget);
+    await tester.fling(find.byType(ReportCard), const Offset(0, 400), 1000);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(repository.calls, 2);
+    expect(find.byType(RefreshProgressIndicator), findsOneWidget);
+    await shot2('CP-REP-029');
+    repository.next!.complete(<Report>[
+      rep(15, 'Problema de agua', 'El Yaqui', ReportStatus.pendiente,
+          DateTime(2026, 10, 8, 10)),
+      rep(5, 'Basura acumulada', 'Santa Fe', ReportStatus.pendiente,
+          DateTime(2026, 10, 2, 10)),
+    ]);
+    await tester.pumpAndSettle();
+    expect(find.byType(RefreshProgressIndicator), findsNothing);
+    expect(find.byType(ReportCard), findsNWidgets(2));
+    expect(find.text('Folio #ECO-2026-0015 · El Yaqui'), findsOneWidget);
+  });
+
+  testWidgets('CP-REP-030', (tester) async {
+    await open(
+      tester,
+      MyReportsScreen(repository: FakeReportsRepository(fail: true)),
+    );
+    expect(find.text('No se pudieron cargar tus reportes'), findsOneWidget);
+    expect(
+      find.text('Revisa tu conexión y desliza hacia abajo para reintentar.'),
+      findsOneWidget,
+    );
+    expect(find.byIcon(Icons.cloud_off_rounded), findsOneWidget);
+    expect(find.byType(ReportCard), findsNothing);
+    await shot2('CP-REP-030');
+  });
+}
