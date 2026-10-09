@@ -1,0 +1,144 @@
+// Pruebas de los casos pendientes de la matriz que se pueden automatizar,
+// con captura de evidencia. No es parte del repo.
+import 'package:ecocuajimalpa/core/widgets/app_bottom_nav.dart';
+import 'package:ecocuajimalpa/features/auth/presentation/register_screen.dart';
+import 'package:ecocuajimalpa/features/learning/presentation/learn_screen.dart';
+import 'package:ecocuajimalpa/features/profile/presentation/profile_screen.dart';
+import 'package:ecocuajimalpa/features/reports/presentation/report_screen.dart';
+import 'package:ecocuajimalpa/features/shell/main_shell.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import '../helpers.dart';
+import 'shots_test.dart' show loadFonts, open, shot, ana;
+
+void main() {
+  setUpAll(loadFonts);
+
+  testWidgets('CP-AUT-004', (tester) async {
+    await open(tester, const RegisterScreen(), height: 2800);
+
+    final Finder fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(0), 'Ana Pérez');
+    await tester.enterText(fields.at(1), 'ana@correo.mx');
+    await tester.enterText(fields.at(2), 'claveSegura1');
+    await tester.enterText(fields.at(3), 'otraClave1');
+    await tester.tap(find.widgetWithText(FilledButton, 'Crear cuenta'));
+    await tester.pumpAndSettle();
+    expect(find.text('Las contraseñas no coinciden'), findsOneWidget);
+
+    await tester.enterText(fields.at(3), 'claveSegura1');
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Santa Fe').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Crear cuenta'));
+    await tester.pumpAndSettle();
+    expect(find.text('Las contraseñas no coinciden'), findsNothing);
+    expect(
+      find.text('Debes aceptar los términos de uso y el aviso de privacidad.'),
+      findsOneWidget,
+    );
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    await shot('CP-AUT-004');
+  });
+
+  testWidgets('CP-AUT-008', (tester) async {
+    final FakeProfileRepository repository = FakeProfileRepository(ana);
+    await open(tester, ProfileScreen(repository: repository));
+
+    await tester.ensureVisible(find.text('Cerrar sesión').first);
+    await tester.tap(find.text('Cerrar sesión').first);
+    await tester.pumpAndSettle();
+    expect(find.text('¿Cerrar sesión?'), findsOneWidget);
+    await shot('CP-AUT-008');
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Cerrar sesión'));
+    await tester.pumpAndSettle();
+    expect(repository.signedOut, isTrue);
+  });
+
+  testWidgets('CP-REP-009', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+
+    await tester.tap(find.text('Basura acumulada'));
+    await tester.pump();
+    await tester.tap(find.text('Cancelar'));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Cancelar el reporte?'), findsOneWidget);
+    await shot('CP-REP-009');
+
+    await tester.tap(find.text('Seguir editando'));
+    await tester.pumpAndSettle();
+    expect(find.text('Paso 1 de 3'), findsOneWidget);
+
+    await tester.tap(find.text('Cancelar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancelar reporte'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ReportScreen), findsNothing);
+  });
+
+  testWidgets('CP-TAR-002', (tester) async {
+    await open(tester, const LearnScreen(), height: 3600);
+
+    const Map<String, String> containers = <String, String>{
+      'Orgánicos': 'Bote verde',
+      'Inorgánicos': 'Bote gris o negro',
+      'Plástico': 'Contenedor azul',
+      'Papel y Cartón': 'Contenedor amarillo',
+      'Vidrio': 'Contenedor verde o café',
+      'Residuos especiales': 'Centro de acopio especializado',
+    };
+
+    for (final MapEntry<String, String> entry in containers.entries) {
+      await tester.ensureVisible(find.text(entry.key));
+      await tester.tap(find.text(entry.key));
+      await tester.pumpAndSettle();
+      if (find.text(entry.value).evaluate().isEmpty) {
+        // Orgánicos viene abierta: el primer toque la cierra.
+        await tester.tap(find.text(entry.key));
+        await tester.pumpAndSettle();
+      }
+      expect(find.text(entry.value), findsOneWidget, reason: entry.key);
+    }
+
+    await tester.ensureVisible(find.text('Plástico'));
+    await tester.tap(find.text('Plástico'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text(
+        'Enjuaga los envases antes de reciclarlos. El plástico sucio no puede procesarse.',
+      ),
+      findsOneWidget,
+    );
+    await tester.scrollUntilVisible(find.text('Plástico'), -300);
+    await tester.pumpAndSettle();
+    await shot('CP-TAR-002');
+  });
+
+  testWidgets('CP-TAR-003', (tester) async {
+    AppTab? selected;
+    await open(
+      tester,
+      MainShellScope(
+        currentTab: AppTab.aprender,
+        selectTab: (tab) => selected = tab,
+        openReport: () async {},
+        notifyDataChanged: () {},
+        dataVersion: ValueNotifier<int>(0),
+        child: const LearnScreen(),
+      ),
+      height: 3600,
+    );
+
+    await tester.ensureVisible(find.text('Ver centros'));
+    await tester.pumpAndSettle();
+    await shot('CP-TAR-003');
+    await tester.tap(find.text('Ver centros'));
+    await tester.pump();
+    expect(selected, AppTab.reciclaje);
+  });
+}

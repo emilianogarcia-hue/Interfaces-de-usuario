@@ -1,0 +1,426 @@
+// Genera capturas de evidencia para la matriz de pruebas. No es parte del repo.
+import 'dart:io';
+
+import 'package:ecocuajimalpa/core/theme/app_colors.dart';
+import 'package:ecocuajimalpa/features/auth/presentation/login_screen.dart';
+import 'package:ecocuajimalpa/features/campaigns/data/campaign.dart';
+import 'package:ecocuajimalpa/features/campaigns/presentation/campaigns_screen.dart';
+import 'package:ecocuajimalpa/features/learning/presentation/learn_screen.dart';
+import 'package:ecocuajimalpa/features/notifications/data/app_notification.dart';
+import 'package:ecocuajimalpa/features/notifications/presentation/notifications_screen.dart';
+import 'package:ecocuajimalpa/features/profile/data/profile_repository.dart';
+import 'package:ecocuajimalpa/features/profile/presentation/edit_profile_screen.dart';
+import 'package:ecocuajimalpa/features/reports/data/report.dart';
+import 'package:ecocuajimalpa/features/reports/presentation/my_reports_screen.dart';
+import 'package:ecocuajimalpa/features/reports/presentation/report_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import '../helpers.dart';
+
+const String fonts = '/home/claude/sdk/flutter/bin/cache/artifacts/material_fonts';
+
+Future<void> loadFonts() async {
+  final FontLoader roboto = FontLoader('Roboto');
+  for (final String f in <String>[
+    'Roboto-Regular.ttf',
+    'Roboto-Medium.ttf',
+    'Roboto-Bold.ttf',
+    'Roboto-Light.ttf',
+    'Roboto-Black.ttf',
+    'Roboto-Italic.ttf',
+  ]) {
+    roboto.addFont(
+      Future<ByteData>.value(
+        ByteData.sublistView(File('$fonts/$f').readAsBytesSync()),
+      ),
+    );
+  }
+  await roboto.load();
+
+  final FontLoader icons = FontLoader('MaterialIcons');
+  icons.addFont(
+    Future<ByteData>.value(
+      ByteData.sublistView(
+        File('$fonts/MaterialIcons-Regular.otf').readAsBytesSync(),
+      ),
+    ),
+  );
+  await icons.load();
+}
+
+ThemeData get theme => ThemeData(
+  useMaterial3: true,
+  fontFamily: 'Roboto',
+  scaffoldBackgroundColor: AppColors.background,
+  colorScheme: ColorScheme.fromSeed(seedColor: AppColors.primaryGreen),
+);
+
+void phone(WidgetTester tester, {double height = 2400}) {
+  tester.view.physicalSize = Size(1080, height);
+  tester.view.devicePixelRatio = 2.625;
+  addTearDown(tester.view.reset);
+}
+
+Future<void> open(WidgetTester tester, Widget screen, {double height = 2400}) async {
+  phone(tester, height: height);
+  await tester.pumpWidget(
+    MaterialApp(debugShowCheckedModeBanner: false, theme: theme, home: screen),
+  );
+  await tester.pumpAndSettle();
+}
+
+Future<void> shot(String id) async {
+  await expectLater(find.byType(MaterialApp), matchesGoldenFile('out/$id.png'));
+}
+
+Campaign campaign(int id, String title, {bool joined = false, bool now = false}) =>
+    Campaign(
+      id: id,
+      title: title,
+      description: 'Jornada de $title en la alcaldía.',
+      location: 'Parque Lineal',
+      colony: 'Contadero',
+      category: 'Limpieza',
+      startsAt: now
+          ? DateTime.now().subtract(const Duration(hours: 1))
+          : DateTime.now().add(const Duration(days: 3)),
+      endsAt: now
+          ? DateTime.now().add(const Duration(hours: 3))
+          : DateTime.now().add(const Duration(days: 3, hours: 4)),
+      participantsCount: 5,
+      joined: joined,
+    );
+
+const UserProfile ana = UserProfile(
+  fullName: 'Ana Pérez',
+  email: 'ana@correo.mx',
+  colony: 'Santa Fe',
+  reportsCount: 2,
+  recycledKg: 0,
+);
+
+Future<void> openEditor(WidgetTester tester) async {
+  phone(tester, height: 3400);
+  await tester.pumpWidget(
+    MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: Center(
+            child: TextButton(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute<bool>(
+                  builder: (context) => EditProfileScreen(
+                    profile: ana,
+                    repository: FakeProfileRepository(ana),
+                  ),
+                ),
+              ),
+              child: const Text('abrir'),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.tap(find.text('abrir'));
+  await tester.pumpAndSettle();
+}
+
+List<AppNotification> notifications() {
+  final DateTime now = DateTime.now();
+  return <AppNotification>[
+    AppNotification(
+      id: 1,
+      type: NotificationType.campana,
+      title: 'Nueva campaña: Reforestación',
+      body: 'Parque Lineal',
+      createdAt: now.subtract(const Duration(minutes: 5)),
+    ),
+    AppNotification(
+      id: 2,
+      type: NotificationType.sistema,
+      title: '¡Bienvenido a EcoCuajimalpa!',
+      body: '',
+      createdAt: now.subtract(const Duration(days: 20)),
+      readAt: now.subtract(const Duration(days: 19)),
+    ),
+  ];
+}
+
+Future<void> toLastStep(WidgetTester tester) async {
+  await tester.tap(find.text('Basura acumulada'));
+  await tester.pump();
+  await tester.tap(find.text('Continuar'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Santa Fe').first);
+  await tester.enterText(
+    find.byType(TextField),
+    'Bolsas de basura acumuladas en la esquina',
+  );
+  await tester.pump();
+  await tester.tap(find.text('Continuar'));
+  await tester.pumpAndSettle();
+}
+
+void main() {
+  setUpAll(loadFonts);
+
+  testWidgets('CP-AUT-003', (tester) async {
+    await open(tester, const LoginScreen());
+    await tester.enterText(find.byType(TextFormField).at(0), 'correo@');
+    await tester.enterText(find.byType(TextFormField).at(1), '12345');
+    await tester.tap(find.widgetWithText(FilledButton, 'Iniciar sesión'));
+    await tester.pumpAndSettle();
+    await shot('CP-AUT-003');
+  });
+
+  testWidgets('CP-AUT-006', (tester) async {
+    await open(tester, const LoginScreen());
+    await tester.enterText(find.byType(TextFormField).at(0), 'ana@correo.mx');
+    await tester.tap(find.text('¿Olvidaste tu contraseña?'));
+    await tester.pumpAndSettle();
+    await shot('CP-AUT-006');
+  });
+
+  testWidgets('CP-REP-001', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await shot('CP-REP-001');
+  });
+
+  testWidgets('CP-REP-002', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await tester.tap(find.text('Zona descuidada'));
+    await tester.pump();
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Contadero'));
+    await tester.enterText(find.byType(TextField), 'Basura');
+    await tester.pumpAndSettle();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    await shot('CP-REP-002');
+  });
+
+  testWidgets('CP-REP-003', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await toLastStep(tester);
+    await tester.tap(find.text('Enviar reporte'));
+    await tester.pumpAndSettle();
+    await shot('CP-REP-003');
+  });
+
+  testWidgets('CP-REP-004', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository(fail: true)));
+    await toLastStep(tester);
+    await tester.tap(find.text('Enviar reporte'));
+    await tester.pumpAndSettle();
+    await shot('CP-REP-004');
+  });
+
+  testWidgets('CP-REP-005', (tester) async {
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await tester.tap(find.text('Basura acumulada'));
+    await tester.pump();
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.arrow_back_ios_new_rounded));
+    await tester.pumpAndSettle();
+    await shot('CP-REP-005');
+  });
+
+  testWidgets('CP-REP-010', (tester) async {
+    await open(
+      tester,
+      MyReportsScreen(
+        repository: FakeReportsRepository(
+          reports: <Report>[
+            Report(
+              id: 1,
+              folio: 'ECO-2026-0001',
+              category: 'Problema de agua',
+              colony: 'El Yaqui',
+              description: 'Fuga en la banqueta',
+              status: ReportStatus.enProceso,
+              createdAt: DateTime(2026, 9, 1),
+            ),
+            Report(
+              id: 2,
+              folio: 'ECO-2026-0002',
+              category: 'Basura acumulada',
+              colony: 'Santa Fe',
+              description: 'Bolsas en la esquina',
+              status: ReportStatus.pendiente,
+              createdAt: DateTime(2026, 10, 5),
+            ),
+            Report(
+              id: 3,
+              folio: 'ECO-2026-0003',
+              category: 'Árbol caído/dañado',
+              colony: 'Contadero',
+              description: 'Rama caída',
+              status: ReportStatus.resuelto,
+              createdAt: DateTime(2026, 8, 20),
+            ),
+          ],
+        ),
+      ),
+    );
+    await shot('CP-REP-010');
+  });
+
+  testWidgets('CP-REP-011', (tester) async {
+    await open(tester, MyReportsScreen(repository: FakeReportsRepository()));
+    await shot('CP-REP-011');
+  });
+
+  testWidgets('CP-TAR-001', (tester) async {
+    await open(tester, const LearnScreen());
+    await tester.tap(find.text('Vidrio'));
+    await tester.pumpAndSettle();
+    await shot('CP-TAR-001');
+  });
+
+  testWidgets('CP-CAM-001', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[campaign(1, 'Reforestación')]),
+      ),
+    );
+    await tester.tap(find.text('Inscribirme'));
+    await tester.pumpAndSettle();
+    await shot('CP-CAM-001');
+  });
+
+  testWidgets('CP-CAM-002', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[
+          campaign(1, 'Reforestación', joined: true),
+        ]),
+      ),
+    );
+    await tester.tap(find.text('Inscrito · Cancelar'));
+    await tester.pumpAndSettle();
+    await shot('CP-CAM-002');
+  });
+
+  testWidgets('CP-CAM-003', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[
+          campaign(1, 'Reforestación', joined: true),
+          campaign(2, 'Reciclatón'),
+        ]),
+      ),
+    );
+    await tester.tap(find.text('Mis campañas (1)'));
+    await tester.pumpAndSettle();
+    await shot('CP-CAM-003');
+  });
+
+  testWidgets('CP-CAM-004', (tester) async {
+    await open(tester, CampaignsScreen(repository: FakeCampaignsRepository(<Campaign>[])));
+    await shot('CP-CAM-004');
+  });
+
+  testWidgets('CP-CAM-005', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[
+          campaign(1, 'Limpieza del río', now: true),
+          campaign(2, 'Reciclatón'),
+        ]),
+      ),
+    );
+    await shot('CP-CAM-005');
+  });
+
+  testWidgets('CP-PER-001', (tester) async {
+    await openEditor(tester);
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Nombre completo'),
+      'Ana María Pérez',
+    );
+    await tester.pumpAndSettle();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    await shot('CP-PER-001');
+  });
+
+  testWidgets('CP-PER-002', (tester) async {
+    await openEditor(tester);
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Teléfono (opcional)'),
+      '12345',
+    );
+    await tester.pump();
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    await shot('CP-PER-002');
+  });
+
+  testWidgets('CP-PER-003', (tester) async {
+    await openEditor(tester);
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Nombre completo'),
+      'Ana María Pérez',
+    );
+    await tester.pump();
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    await shot('CP-PER-003');
+  });
+
+  testWidgets('CP-PER-004', (tester) async {
+    await openEditor(tester);
+    await tester.tap(find.text('Eliminar mi cuenta'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.descendant(of: find.byType(AlertDialog), matching: find.byType(TextField)),
+      'ELIMINAR',
+    );
+    await tester.pumpAndSettle();
+    await shot('CP-PER-004');
+  });
+
+  testWidgets('CP-NOT-001', (tester) async {
+    await open(
+      tester,
+      NotificationsScreen(repository: FakeNotificationsRepository(notifications())),
+    );
+    await tester.tap(find.text('Marcar todo leído'));
+    await tester.pumpAndSettle();
+    await shot('CP-NOT-001');
+  });
+
+  testWidgets('CP-NOT-002', (tester) async {
+    await open(
+      tester,
+      NotificationsScreen(repository: FakeNotificationsRepository(notifications())),
+    );
+    await tester.drag(find.text('¡Bienvenido a EcoCuajimalpa!'), const Offset(-200, 0));
+    await tester.pump(const Duration(milliseconds: 150));
+    await shot('CP-NOT-002');
+  });
+
+  testWidgets('CP-NOT-003', (tester) async {
+    await open(
+      tester,
+      NotificationsScreen(repository: FakeNotificationsRepository(notifications())),
+    );
+    await tester.tap(find.text('Nueva campaña: Reforestación'));
+    await tester.pumpAndSettle();
+    await shot('CP-NOT-003');
+  });
+}

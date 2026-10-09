@@ -1,0 +1,189 @@
+// Casos de la matriz que usan GPS, cámara o galería, con esas funciones del
+// teléfono simuladas. No es parte del repo.
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:ecocuajimalpa/core/services/location_service.dart';
+import 'package:ecocuajimalpa/features/profile/presentation/edit_profile_screen.dart';
+import 'package:ecocuajimalpa/features/reports/presentation/report_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'package:plugin_platform_interface/plugin_platform_interface.dart';
+
+import '../helpers.dart';
+import 'shots_test.dart' show loadFonts, open, shot, ana, theme, phone;
+
+final Uint8List photo = File(
+  'test/_shots/assets/foto_reporte.jpg',
+).readAsBytesSync();
+
+class FakeLocationService extends LocationService {
+  const FakeLocationService();
+
+  @override
+  Future<GeoPoint> getCurrentLocation() async =>
+      const GeoPoint(19.36721, -99.29214);
+}
+
+/// Simula la cámara o galería del teléfono devolviendo [bytes].
+class FakePickerPlatform extends ImagePickerPlatform
+    with MockPlatformInterfaceMixin {
+  FakePickerPlatform(this.bytes, this.name);
+
+  final Uint8List bytes;
+  final String name;
+  final List<ImageSource> sources = <ImageSource>[];
+
+  @override
+  Future<XFile?> getImageFromSource({
+    required ImageSource source,
+    ImagePickerOptions options = const ImagePickerOptions(),
+  }) async {
+    sources.add(source);
+    return XFile.fromData(bytes, name: name, length: bytes.length);
+  }
+}
+
+class FakeImagePicker extends ImagePicker {
+  FakeImagePicker(this.bytes);
+
+  final Uint8List bytes;
+
+  @override
+  Future<XFile?> pickImage({
+    required ImageSource source,
+    double? maxWidth,
+    double? maxHeight,
+    int? imageQuality,
+    CameraDevice preferredCameraDevice = CameraDevice.rear,
+    bool requestFullMetadata = true,
+  }) async => XFile.fromData(bytes, name: 'selfie.jpg', length: bytes.length);
+}
+
+Future<void> toStepTwo(WidgetTester tester) async {
+  await tester.tap(find.text('Basura acumulada'));
+  await tester.pump();
+  await tester.tap(find.text('Continuar'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Santa Fe').first);
+  await tester.enterText(
+    find.byType(TextField),
+    'Bolsas de basura acumuladas en la esquina',
+  );
+  await tester.pump();
+  FocusManager.instance.primaryFocus?.unfocus();
+  await tester.pumpAndSettle();
+}
+
+Future<void> toStepThree(WidgetTester tester) async {
+  await toStepTwo(tester);
+  await tester.tap(find.text('Continuar'));
+  await tester.pumpAndSettle();
+}
+
+void main() {
+  setUpAll(loadFonts);
+
+  testWidgets('CP-REP-006', (tester) async {
+    final FakeReportsRepository repository = FakeReportsRepository();
+    await open(
+      tester,
+      ReportScreen(
+        repository: repository,
+        locationService: const FakeLocationService(),
+      ),
+    );
+    await toStepTwo(tester);
+
+    await tester.tap(find.text('Agregar mi ubicación (opcional)'));
+    await tester.pumpAndSettle();
+    expect(find.text('¿Activar tu ubicación?'), findsOneWidget);
+    await tester.tap(find.text('Activar'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Ubicación agregada al reporte.'), findsOneWidget);
+    expect(find.textContaining('19.36721'), findsOneWidget);
+    await shot('CP-REP-006');
+
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Incluido'), findsOneWidget);
+    await tester.tap(find.text('Enviar reporte'));
+    await tester.pumpAndSettle();
+    expect(repository.submitted.single.latitude, 19.36721);
+    expect(repository.submitted.single.longitude, -99.29214);
+  });
+
+  testWidgets('CP-REP-007', (tester) async {
+    final FakePickerPlatform picker = FakePickerPlatform(photo, 'foto.jpg');
+    ImagePickerPlatform.instance = picker;
+    final FakeReportsRepository repository = FakeReportsRepository();
+    await open(tester, ReportScreen(repository: repository));
+    await toStepThree(tester);
+
+    await tester.tap(find.text('Tomar foto o seleccionar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Elegir de la galería'));
+    await tester.pumpAndSettle();
+
+    for (int i = 0; i < 10; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(picker.sources, <ImageSource>[ImageSource.gallery]);
+    expect(find.text('Foto seleccionada'), findsOneWidget);
+    expect(find.text('Incluida'), findsOneWidget);
+    await shot('CP-REP-007');
+
+    await tester.tap(find.text('Enviar reporte'));
+    await tester.pumpAndSettle();
+    expect(repository.submitted.single.photoBytes, photo);
+  });
+
+  testWidgets('CP-REP-008', (tester) async {
+    final Uint8List big = Uint8List(ReportScreen.maxPhotoBytes + 1024);
+    ImagePickerPlatform.instance = FakePickerPlatform(big, 'grande.jpg');
+    await open(tester, ReportScreen(repository: FakeReportsRepository()));
+    await toStepThree(tester);
+
+    await tester.tap(find.text('Tomar foto o seleccionar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Elegir de la galería'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('La foto supera los 10 MB.'), findsOneWidget);
+    expect(find.text('Foto seleccionada'), findsNothing);
+    expect(find.text('Sin foto'), findsOneWidget);
+    await shot('CP-REP-008');
+  });
+
+  testWidgets('CP-PER-005', (tester) async {
+    final FakeProfileRepository repository = FakeProfileRepository(ana);
+    phone(tester, height: 3400);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: EditProfileScreen(
+          profile: ana,
+          repository: repository,
+          imagePicker: FakeImagePicker(photo),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Cambiar foto'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Tomar foto'));
+    await tester.pumpAndSettle();
+
+    expect(repository.avatarUploads, 1);
+    expect(find.text('Foto de perfil actualizada.'), findsOneWidget);
+    await shot('CP-PER-005');
+  });
+}

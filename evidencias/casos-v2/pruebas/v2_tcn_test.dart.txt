@@ -1,0 +1,1032 @@
+// Casos de Guías de reciclaje, Campañas y Notificaciones de la matriz v2,
+// con captura de evidencia en out2/. Usa repositorios simulados y, donde la
+// pantalla crea su propio repositorio de Supabase, un servidor simulado.
+// No es parte del repo.
+import 'dart:io';
+
+import 'package:ecocuajimalpa/core/widgets/app_bottom_nav.dart';
+import 'package:ecocuajimalpa/features/auth/presentation/home_screen.dart';
+import 'package:ecocuajimalpa/features/campaigns/data/campaign.dart';
+import 'package:ecocuajimalpa/features/campaigns/data/campaigns_repository.dart';
+import 'package:ecocuajimalpa/features/campaigns/presentation/campaigns_screen.dart';
+import 'package:ecocuajimalpa/features/learning/presentation/learn_screen.dart';
+import 'package:ecocuajimalpa/features/notifications/data/app_notification.dart';
+import 'package:ecocuajimalpa/features/notifications/presentation/notifications_screen.dart';
+import 'package:ecocuajimalpa/features/recycling/presentation/recycling_centers_screen.dart';
+import 'package:ecocuajimalpa/features/reports/presentation/my_reports_screen.dart';
+import 'package:ecocuajimalpa/features/shell/main_shell.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator_platform_interface/geolocator_platform_interface.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../helpers.dart';
+import 'shots_test.dart' show loadFonts, open, theme, phone, campaign, ana;
+import 'supabase_test.dart' show FakeGeolocator, centers, json, network;
+
+Future<void> shot2(String id) async {
+  await expectLater(find.byType(MaterialApp), matchesGoldenFile('out2/$id.png'));
+}
+
+http.Response Function(http.Request request) server = (_) =>
+    http.Response('[]', 200);
+final List<http.Request> requests = <http.Request>[];
+
+/// Repositorio de campañas cuya red falla al inscribirse o cancelar.
+class OfflineCampaignsRepository extends FakeCampaignsRepository {
+  OfflineCampaignsRepository(super.campaigns);
+
+  @override
+  Future<void> join(int campaignId) async => throw Exception('sin conexión');
+
+  @override
+  Future<void> leave(int campaignId) async => throw Exception('sin conexión');
+}
+
+/// Notificaciones simuladas con contador de no leídas fijo.
+class CountingNotificationsRepository extends FakeNotificationsRepository {
+  CountingNotificationsRepository(super.items, {this.failDelete = false});
+
+  final bool failDelete;
+
+  @override
+  Stream<int> unreadCount() =>
+      Stream<int>.value(items.where((n) => !n.isRead).length);
+
+  @override
+  Future<void> delete(int id) async {
+    if (failDelete) {
+      // La petición sin red tarda un momento en fallar.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      throw Exception('sin conexión');
+    }
+    return super.delete(id);
+  }
+}
+
+/// Mismo armado que MainShell (pestañas en IndexedStack + barra inferior),
+/// pero con las pantallas creadas con repositorios simulados.
+class TestShell extends StatefulWidget {
+  const TestShell({super.key, required this.tabs, this.initial = AppTab.inicio});
+
+  final Map<AppTab, Widget> tabs;
+  final AppTab initial;
+
+  @override
+  State<TestShell> createState() => _TestShellState();
+}
+
+class _TestShellState extends State<TestShell> {
+  late AppTab _current = widget.initial;
+  final ValueNotifier<int> _version = ValueNotifier<int>(0);
+
+  void _select(AppTab tab) => setState(() => _current = tab);
+
+  @override
+  Widget build(BuildContext context) {
+    return MainShellScope(
+      currentTab: _current,
+      selectTab: _select,
+      openReport: () async {},
+      notifyDataChanged: () => _version.value++,
+      dataVersion: _version,
+      child: Scaffold(
+        body: IndexedStack(
+          index: AppTab.values.indexOf(_current),
+          children: AppTab.values
+              .map((tab) => widget.tabs[tab] ?? const SizedBox.shrink())
+              .toList(),
+        ),
+        bottomNavigationBar: AppBottomNav(
+          current: _current,
+          onSelected: _select,
+          onReport: () {},
+        ),
+      ),
+    );
+  }
+}
+
+AppNotification notif(
+  int id,
+  NotificationType type,
+  String title,
+  String body, {
+  Duration ago = const Duration(minutes: 5),
+  bool read = false,
+}) {
+  final DateTime now = DateTime.now();
+  return AppNotification(
+    id: id,
+    type: type,
+    title: title,
+    body: body,
+    createdAt: now.subtract(ago),
+    readAt: read ? now.subtract(ago).add(const Duration(minutes: 1)) : null,
+  );
+}
+
+AppNotification reporteNotif({bool read = false}) => notif(
+  1,
+  NotificationType.reporte,
+  'Tu reporte ECO-2026-0001 está en proceso',
+  'La Alcaldía ya está atendiendo el problema en El Yaqui.',
+  ago: const Duration(minutes: 20),
+  read: read,
+);
+
+AppNotification campanaNotif({bool read = false}) => notif(
+  2,
+  NotificationType.campana,
+  'Nueva campaña: Reforestación',
+  'Parque Lineal · 12/10 09:00',
+  read: read,
+);
+
+AppNotification consejoNotif({bool read = false}) => notif(
+  3,
+  NotificationType.consejo,
+  'Consejo de la semana',
+  'Lleva tu propia bolsa al mercado y evita las de un solo uso.',
+  ago: const Duration(days: 2),
+  read: read,
+);
+
+AppNotification bienvenida() => notif(
+  4,
+  NotificationType.sistema,
+  '¡Bienvenido a EcoCuajimalpa!',
+  'Ya puedes reportar problemas, encontrar centros de reciclaje y unirte a campañas.',
+  ago: const Duration(days: 20),
+  read: true,
+);
+
+HomeScreen home(CountingNotificationsRepository notifications) => HomeScreen(
+  profileRepository: FakeProfileRepository(ana),
+  reportsRepository: FakeReportsRepository(),
+  campaignsRepository: FakeCampaignsRepository(<Campaign>[]),
+  notificationsRepository: notifications,
+);
+
+Finder cardOf(String title) => find.ancestor(
+  of: find.text(title),
+  matching: find.byType(AnimatedContainer),
+);
+
+double arrowTurns(String title) => (find
+            .descendant(of: cardOf(title), matching: find.byType(AnimatedRotation))
+            .evaluate()
+            .first
+            .widget
+        as AnimatedRotation)
+    .turns;
+
+final Finder badge = find.byWidgetPredicate(
+  (w) =>
+      w is Container &&
+      w.decoration is BoxDecoration &&
+      (w.decoration! as BoxDecoration).color == const Color(0xFFFFC857),
+);
+
+Text textWidget(WidgetTester tester, String text) =>
+    tester.widget<Text>(find.text(text));
+
+Color tileColor(WidgetTester tester, String title) => tester
+    .widget<Material>(
+      find
+          .ancestor(of: find.text(title), matching: find.byType(Material))
+          .first,
+    )
+    .color!;
+
+void main() {
+  setUpAll(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('plugins.flutter.io/path_provider'),
+          (call) async => Directory.systemTemp.createTempSync('eco').path,
+        );
+    await loadFonts();
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await Supabase.initialize(
+      url: 'https://prueba.supabase.co',
+      anonKey: 'anon-key-de-prueba',
+      httpClient: MockClient((request) async {
+        requests.add(request);
+        final http.Response response = server(request);
+        return http.Response.bytes(
+          response.bodyBytes,
+          response.statusCode,
+          headers: response.headers,
+          request: request,
+        );
+      }),
+      authOptions: const FlutterAuthClientOptions(
+        detectSessionInUri: false,
+        autoRefreshToken: false,
+        localStorage: EmptyLocalStorage(),
+      ),
+    );
+  });
+
+  setUp(requests.clear);
+
+  // ---------------------------------------------------------------- TAR
+
+  const List<String> categorias = <String>[
+    'Orgánicos',
+    'Inorgánicos',
+    'Plástico',
+    'Papel y Cartón',
+    'Vidrio',
+    'Residuos especiales',
+  ];
+
+  testWidgets('CP-TAR-001', (tester) async {
+    await open(tester, const LearnScreen(), height: 3900);
+    // Orgánicos viene abierta; se cierra para ver las seis tarjetas juntas.
+    await tester.tap(find.text('Orgánicos'));
+    await tester.pumpAndSettle();
+    for (final String c in categorias) {
+      expect(find.text(c), findsOneWidget, reason: c);
+    }
+    expect(find.text('Aprende a Reciclar'), findsOneWidget);
+    expect(find.text('Guías de separación de residuos'), findsOneWidget);
+    expect(find.text('Cuida el agua'), findsOneWidget);
+    await shot2('CP-TAR-001');
+  });
+
+  Future<void> abrirCategoria(
+    WidgetTester tester,
+    String id,
+    String titulo,
+    String contenedor,
+    List<String> ejemplos,
+    String consejo,
+  ) async {
+    await open(tester, const LearnScreen(), height: 3900);
+    await tester.tap(find.text(titulo));
+    await tester.pumpAndSettle();
+    expect(find.text('Contenedor:'), findsOneWidget);
+    expect(find.text(contenedor), findsOneWidget);
+    for (final String e in ejemplos) {
+      expect(find.text(e), findsOneWidget, reason: e);
+    }
+    expect(find.text(consejo), findsOneWidget);
+    expect(find.text('💡'), findsOneWidget);
+    // Solo una tarjeta abierta: Orgánicos se cerró.
+    expect(find.text('Bote verde'), findsNothing);
+    await shot2(id);
+  }
+
+  testWidgets('CP-TAR-002', (tester) async {
+    await abrirCategoria(
+      tester,
+      'CP-TAR-002',
+      'Plástico',
+      'Contenedor azul',
+      const <String>[
+        'Botellas de refresco y agua',
+        'Bolsas de plástico limpias',
+        'Envases de shampoo y detergente',
+        'Frascos de medicamentos vacíos',
+        'Tapas y popotes',
+      ],
+      'Enjuaga los envases antes de reciclarlos. El plástico sucio no puede procesarse.',
+    );
+  });
+
+  testWidgets('CP-TAR-003', (tester) async {
+    await abrirCategoria(
+      tester,
+      'CP-TAR-003',
+      'Vidrio',
+      'Contenedor verde o café',
+      const <String>[
+        'Botellas de bebidas',
+        'Frascos de conservas y mermelada',
+        'Botellas de vino y cerveza',
+        'Frascos de salsas',
+      ],
+      '¡El vidrio se puede reciclar infinitas veces sin perder calidad!',
+    );
+  });
+
+  testWidgets('CP-TAR-004', (tester) async {
+    await open(tester, const LearnScreen(), height: 3900);
+    expect(find.text('Bote verde'), findsOneWidget);
+    await tester.tap(find.text('Plástico'));
+    await tester.pumpAndSettle();
+    expect(find.text('Contenedor azul'), findsOneWidget);
+    expect(find.text('Bote verde'), findsNothing);
+    expect(find.text('Cáscaras de frutas y verduras'), findsNothing);
+    expect(arrowTurns('Plástico'), 0.5);
+    expect(arrowTurns('Orgánicos'), 0);
+    expect(find.text('Contenedor:'), findsOneWidget);
+    await shot2('CP-TAR-004');
+  });
+
+  testWidgets('CP-TAR-005', (tester) async {
+    await open(tester, const LearnScreen(), height: 3900);
+    await tester.tap(find.text('Plástico'));
+    await tester.pumpAndSettle();
+    expect(find.text('Contenedor azul'), findsOneWidget);
+    await tester.tap(find.text('Plástico'));
+    await tester.pumpAndSettle();
+    expect(find.text('Contenedor:'), findsNothing);
+    expect(find.text('Contenedor azul'), findsNothing);
+    for (final String c in categorias) {
+      expect(arrowTurns(c), 0, reason: c);
+    }
+    await shot2('CP-TAR-005');
+  });
+
+  testWidgets('CP-TAR-006', (tester) async {
+    await open(tester, const LearnScreen());
+    await tester.scrollUntilVisible(find.text('Ver centros'), 300);
+    await tester.pumpAndSettle();
+    expect(find.text('Cuida el agua'), findsOneWidget);
+    expect(find.text('Consejos para el uso responsable del agua'), findsOneWidget);
+    expect(find.text('¿Tienes una duda?'), findsOneWidget);
+    await tester.tap(find.text('Cuida el agua'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Ver centros'), 300);
+    await tester.pumpAndSettle();
+    for (final String t in const <String>[
+      'Ahorro diario',
+      'Cierra la llave mientras te cepillas',
+      'Repara fugas lo antes posible',
+      'Reutiliza agua para limpiar o regar',
+      'Toma duchas más cortas',
+      'No viertas aceite en el drenaje',
+      'Pequeños cambios diarios pueden ahorrar muchos litros de agua cada semana.',
+      'Ver centros',
+    ]) {
+      expect(find.text(t), findsOneWidget, reason: t);
+    }
+    await shot2('CP-TAR-006');
+  });
+
+  testWidgets('CP-TAR-007', (tester) async {
+    await open(tester, const LearnScreen(), height: 3900);
+    double gap() =>
+        tester.getTopLeft(find.text('Vidrio')).dy -
+        tester.getTopLeft(find.text('Papel y Cartón')).dy;
+    final double before = gap();
+    expect(arrowTurns('Papel y Cartón'), 0);
+    expect(find.text('Contenedor amarillo'), findsNothing);
+    await tester.tap(find.text('Papel y Cartón'));
+    await tester.pumpAndSettle();
+    // La tarjeta crece hacia abajo: el contenido sale bajo su título y lo de abajo baja.
+    expect(gap(), greaterThan(before + 100));
+    expect(
+      tester.getTopLeft(find.text('Contenedor amarillo')).dy,
+      greaterThan(tester.getTopLeft(find.text('Papel y Cartón')).dy),
+    );
+    expect(arrowTurns('Papel y Cartón'), 0.5);
+    expect(find.text('Contenedor amarillo'), findsOneWidget);
+    await shot2('CP-TAR-007');
+  });
+
+  testWidgets('CP-TAR-008', (tester) async {
+    phone(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: TestShell(
+          tabs: <AppTab, Widget>{
+            AppTab.inicio: home(CountingNotificationsRepository(<AppNotification>[])),
+            AppTab.aprender: const LearnScreen(),
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Aprender'));
+    await tester.pumpAndSettle();
+    expect(find.text('Aprende a Reciclar'), findsOneWidget);
+    expect(find.text('Bote verde'), findsOneWidget);
+    expect(find.text('Cáscaras de frutas y verduras'), findsOneWidget);
+    expect(arrowTurns('Orgánicos'), 0.5);
+    expect(find.text('Contenedor:'), findsOneWidget);
+    await shot2('CP-TAR-008');
+  });
+
+  testWidgets('CP-TAR-009', (tester) async {
+    GeolocatorPlatform.instance = FakeGeolocator();
+    server = (request) => request.url.path.endsWith('/recycling_centers')
+        ? json(centers)
+        : json(<dynamic>[]);
+    phone(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: const TestShell(
+          initial: AppTab.aprender,
+          tabs: <AppTab, Widget>{
+            AppTab.aprender: LearnScreen(),
+            AppTab.reciclaje: RecyclingCentersScreen(),
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Ver centros'), 300);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Ver centros'));
+    await network(tester);
+    expect(find.text('Centros de Reciclaje'), findsOneWidget);
+    expect(find.text('Punto Limpio Contadero'), findsWidgets);
+    expect(find.text('Aprende a Reciclar', skipOffstage: true), findsNothing);
+    await shot2('CP-TAR-009');
+  });
+
+  // ---------------------------------------------------------------- CAM
+
+  testWidgets('CP-CAM-001', (tester) async {
+    final Campaign c = campaign(1, 'Reforestación');
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[c, campaign(2, 'Reciclatón')]),
+      ),
+    );
+    expect(find.text('Reforestación'), findsOneWidget);
+    expect(find.text('Reciclatón'), findsOneWidget);
+    expect(find.text('Parque Lineal · Contadero'), findsNWidgets(2));
+    expect(find.text('5'), findsNWidgets(2));
+    expect(find.byIcon(Icons.people_outline_rounded), findsNWidgets(2));
+    expect(find.byIcon(Icons.event_outlined), findsNWidgets(2));
+    expect(find.byIcon(Icons.location_on_outlined), findsNWidgets(2));
+    final String fecha = '${const <String>['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'][c.startsAt.weekday - 1]} ${c.startsAt.day} ';
+    expect(find.textContaining(fecha), findsWidgets);
+    await shot2('CP-CAM-001');
+  });
+
+  testWidgets('CP-CAM-002', (tester) async {
+    final DateTime now = DateTime.now().toUtc();
+    final List<Map<String, dynamic>> rows = <Map<String, dynamic>>[
+      <String, dynamic>{
+        'id': 1,
+        'title': 'Limpieza de barrancas',
+        'description': 'Jornada que ya terminó.',
+        'location': 'Barranca de Tarango',
+        'colony': 'Contadero',
+        'category': 'Limpieza',
+        'starts_at': now.subtract(const Duration(days: 3)).toIso8601String(),
+        'ends_at': now.subtract(const Duration(days: 2)).toIso8601String(),
+        'participants_count': 12,
+      },
+      <String, dynamic>{
+        'id': 2,
+        'title': 'Reforestación',
+        'description': 'Jornada de Reforestación en la alcaldía.',
+        'location': 'Parque Lineal',
+        'colony': 'Contadero',
+        'category': 'Limpieza',
+        'starts_at': now.add(const Duration(days: 3)).toIso8601String(),
+        'ends_at': now.add(const Duration(days: 3, hours: 4)).toIso8601String(),
+        'participants_count': 5,
+      },
+    ];
+    // Servidor simulado que aplica el filtro ends_at=gte.<fecha> como PostgREST.
+    server = (request) {
+      if (request.url.path.endsWith('/campaigns')) {
+        final String? filter = request.url.queryParameters['ends_at'];
+        Iterable<Map<String, dynamic>> result = rows;
+        if (filter != null && filter.startsWith('gte.')) {
+          final DateTime min = DateTime.parse(filter.substring(4));
+          result = rows.where(
+            (r) => !DateTime.parse(r['ends_at'] as String).isBefore(min),
+          );
+        }
+        return json(result.toList());
+      }
+      return json(<dynamic>[]);
+    };
+    phone(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: CampaignsScreen(repository: SupabaseCampaignsRepository()),
+      ),
+    );
+    await network(tester);
+    final http.Request req = requests.firstWhere(
+      (r) => r.url.path.endsWith('/campaigns'),
+    );
+    expect(req.url.queryParameters['ends_at'], startsWith('gte.'));
+    expect(find.text('Reforestación'), findsOneWidget);
+    expect(find.text('Limpieza de barrancas'), findsNothing);
+    await shot2('CP-CAM-002');
+  });
+
+  testWidgets('CP-CAM-003', (tester) async {
+    final FakeCampaignsRepository repo = FakeCampaignsRepository(<Campaign>[
+      campaign(1, 'Reforestación'),
+    ]);
+    await open(tester, CampaignsScreen(repository: repo));
+    expect(find.text('5'), findsOneWidget);
+    expect(find.text('Mis campañas (0)'), findsOneWidget);
+    await tester.tap(find.text('Inscribirme'));
+    await tester.pumpAndSettle();
+    expect(repo.joined, <int>[1]);
+    expect(find.text('6'), findsOneWidget);
+    expect(find.text('5'), findsNothing);
+    expect(find.text('Inscrito · Cancelar'), findsOneWidget);
+    expect(find.text('Inscribirme'), findsNothing);
+    expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+    expect(find.text('Mis campañas (1)'), findsOneWidget);
+    expect(find.text('¡Listo! Te inscribiste en "Reforestación".'), findsOneWidget);
+    await shot2('CP-CAM-003');
+  });
+
+  testWidgets('CP-CAM-004', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: OfflineCampaignsRepository(<Campaign>[campaign(1, 'Reforestación')]),
+      ),
+    );
+    await tester.tap(find.text('Inscribirme'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('No se pudo actualizar tu inscripción. Inténtalo de nuevo.'),
+      findsOneWidget,
+    );
+    final SnackBar bar = tester.widget<SnackBar>(find.byType(SnackBar));
+    expect(bar.backgroundColor, Colors.red);
+    expect(find.text('5'), findsOneWidget);
+    expect(find.text('Inscribirme'), findsOneWidget);
+    expect(find.text('Inscrito · Cancelar'), findsNothing);
+    expect(find.text('Mis campañas (0)'), findsOneWidget);
+    await shot2('CP-CAM-004');
+  });
+
+  testWidgets('CP-CAM-005', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[
+          campaign(1, 'Reforestación', joined: true),
+        ]),
+      ),
+    );
+    expect(find.text('Inscrito · Cancelar'), findsOneWidget);
+    expect(find.text('Inscribirme'), findsNothing);
+    expect(find.byType(FilledButton), findsNothing);
+    expect(find.byType(OutlinedButton), findsOneWidget);
+    await shot2('CP-CAM-005');
+  });
+
+  testWidgets('CP-CAM-006', (tester) async {
+    final FakeCampaignsRepository repo = FakeCampaignsRepository(<Campaign>[
+      campaign(1, 'Reforestación', joined: true),
+    ]);
+    await open(tester, CampaignsScreen(repository: repo));
+    expect(find.text('5'), findsOneWidget);
+    await tester.tap(find.text('Inscrito · Cancelar'));
+    await tester.pumpAndSettle();
+    expect(repo.left, <int>[1]);
+    expect(find.text('4'), findsOneWidget);
+    expect(find.text('Inscribirme'), findsOneWidget);
+    expect(find.text('Inscrito · Cancelar'), findsNothing);
+    expect(find.text('Mis campañas (0)'), findsOneWidget);
+    expect(find.text('Cancelaste tu inscripción.'), findsOneWidget);
+    await shot2('CP-CAM-006');
+  });
+
+  testWidgets('CP-CAM-007', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[
+          campaign(1, 'Reforestación', joined: true),
+          campaign(2, 'Reciclatón'),
+          campaign(3, 'Limpieza del río'),
+        ]),
+      ),
+    );
+    expect(find.text('Reciclatón'), findsOneWidget);
+    await tester.tap(find.text('Mis campañas (1)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Reforestación'), findsOneWidget);
+    expect(find.text('Reciclatón'), findsNothing);
+    expect(find.text('Limpieza del río'), findsNothing);
+    expect(find.text('Inscrito · Cancelar'), findsOneWidget);
+    final ChoiceChip chip = tester.widget<ChoiceChip>(
+      find.widgetWithText(ChoiceChip, 'Mis campañas (1)'),
+    );
+    expect(chip.selected, isTrue);
+    await shot2('CP-CAM-007');
+  });
+
+  testWidgets('CP-CAM-008', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[
+          campaign(1, 'Reforestación'),
+          campaign(2, 'Reciclatón'),
+        ]),
+      ),
+    );
+    await tester.tap(find.text('Mis campañas (0)'));
+    await tester.pumpAndSettle();
+    expect(find.text('No estás inscrito en campañas'), findsOneWidget);
+    expect(find.text('Inscríbete en una campaña para verla aquí.'), findsOneWidget);
+    expect(find.text('Reforestación'), findsNothing);
+    await shot2('CP-CAM-008');
+  });
+
+  testWidgets('CP-CAM-009', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[
+          campaign(1, 'Reforestación', joined: true),
+          campaign(2, 'Reciclatón', joined: true),
+          campaign(3, 'Limpieza del río'),
+        ]),
+      ),
+    );
+    expect(find.text('Campañas Activas'), findsOneWidget);
+    expect(find.text('Jornadas y eventos ecológicos en Cuajimalpa'), findsOneWidget);
+    expect(find.text('Todas'), findsOneWidget);
+    expect(find.text('Mis campañas (2)'), findsOneWidget);
+    expect(
+      tester.widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'Todas')).selected,
+      isTrue,
+    );
+    await shot2('CP-CAM-009');
+  });
+
+  testWidgets('CP-CAM-010', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[
+          campaign(1, 'Limpieza del río', now: true),
+          campaign(2, 'Reciclatón'),
+        ]),
+      ),
+    );
+    expect(find.text('En curso'), findsOneWidget);
+    final Finder cardRio = find.ancestor(
+      of: find.text('Limpieza del río'),
+      matching: find.byType(Column),
+    ).first;
+    expect(find.descendant(of: cardRio, matching: find.text('En curso')), findsOneWidget);
+    final Finder cardRecicla = find.ancestor(
+      of: find.text('Reciclatón'),
+      matching: find.byType(Column),
+    ).first;
+    expect(find.descendant(of: cardRecicla, matching: find.text('En curso')), findsNothing);
+    await shot2('CP-CAM-010');
+  });
+
+  testWidgets('CP-CAM-011', (tester) async {
+    await open(
+      tester,
+      CampaignsScreen(
+        repository: FakeCampaignsRepository(<Campaign>[campaign(1, 'Reforestación')]),
+      ),
+    );
+    await tester.tap(find.text('Inscribirme'));
+    await tester.pumpAndSettle();
+    expect(find.text('¡Listo! Te inscribiste en "Reforestación".'), findsOneWidget);
+    await shot2('CP-CAM-011a');
+    await tester.tap(find.text('Inscrito · Cancelar'));
+    await tester.pumpAndSettle();
+    expect(find.text('¡Listo! Te inscribiste en "Reforestación".'), findsNothing);
+    expect(find.text('Cancelaste tu inscripción.'), findsOneWidget);
+    await shot2('CP-CAM-011b');
+  });
+
+  testWidgets('CP-CAM-012', (tester) async {
+    await open(tester, CampaignsScreen(repository: FakeCampaignsRepository(<Campaign>[])));
+    expect(find.text('No hay campañas activas'), findsOneWidget);
+    expect(
+      find.text('Vuelve pronto para conocer las próximas jornadas.'),
+      findsOneWidget,
+    );
+    expect(find.text('Mis campañas (0)'), findsOneWidget);
+    expect(find.byIcon(Icons.park_outlined), findsOneWidget);
+    await shot2('CP-CAM-012');
+  });
+
+  // ---------------------------------------------------------------- NOT
+
+  testWidgets('CP-NOT-001', (tester) async {
+    await open(
+      tester,
+      NotificationsScreen(
+        repository: CountingNotificationsRepository(<AppNotification>[
+          reporteNotif(),
+          campanaNotif(),
+          consejoNotif(read: true),
+          bienvenida(),
+        ]),
+      ),
+    );
+    expect(find.text('Notificaciones'), findsOneWidget);
+    expect(find.text('Tu reporte ECO-2026-0001 está en proceso'), findsOneWidget);
+    expect(find.text('Nueva campaña: Reforestación'), findsOneWidget);
+    expect(find.text('Hoy'), findsOneWidget);
+    expect(find.text('Esta semana'), findsOneWidget);
+    expect(find.text('Anteriores'), findsOneWidget);
+    expect(find.byIcon(Icons.description_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.campaign_outlined), findsOneWidget);
+    expect(find.text('Hace 5 min'), findsOneWidget);
+    expect(find.text('Hace 20 min'), findsOneWidget);
+    await shot2('CP-NOT-001');
+  });
+
+  testWidgets('CP-NOT-002', (tester) async {
+    await open(
+      tester,
+      home(
+        CountingNotificationsRepository(<AppNotification>[
+          reporteNotif(),
+          campanaNotif(),
+          consejoNotif(),
+          bienvenida(),
+        ]),
+      ),
+    );
+    expect(find.byIcon(Icons.notifications_none_rounded), findsOneWidget);
+    expect(badge, findsOneWidget);
+    expect(find.descendant(of: badge, matching: find.text('3')), findsOneWidget);
+    await shot2('CP-NOT-002');
+  });
+
+  testWidgets('CP-NOT-003', (tester) async {
+    await open(
+      tester,
+      home(
+        CountingNotificationsRepository(<AppNotification>[
+          reporteNotif(read: true),
+          bienvenida(),
+        ]),
+      ),
+    );
+    expect(find.byIcon(Icons.notifications_none_rounded), findsOneWidget);
+    expect(badge, findsNothing);
+    await shot2('CP-NOT-003');
+  });
+
+  testWidgets('CP-NOT-004', (tester) async {
+    await open(
+      tester,
+      NotificationsScreen(
+        repository: CountingNotificationsRepository(<AppNotification>[
+          reporteNotif(),
+          campanaNotif(),
+          consejoNotif(read: true),
+          bienvenida(),
+        ]),
+      ),
+    );
+    await tester.tap(find.text('No leídas (2)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Tu reporte ECO-2026-0001 está en proceso'), findsOneWidget);
+    expect(find.text('Nueva campaña: Reforestación'), findsOneWidget);
+    expect(find.text('Consejo de la semana'), findsNothing);
+    expect(find.text('¡Bienvenido a EcoCuajimalpa!'), findsNothing);
+    expect(
+      tester.widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'No leídas (2)')).selected,
+      isTrue,
+    );
+    await shot2('CP-NOT-004');
+  });
+
+  testWidgets('CP-NOT-005', (tester) async {
+    final CountingNotificationsRepository repo =
+        CountingNotificationsRepository(<AppNotification>[
+          reporteNotif(),
+          campanaNotif(),
+          bienvenida(),
+        ]);
+    await open(tester, NotificationsScreen(repository: repo));
+    await tester.tap(find.text('Marcar todo leído'));
+    await tester.pumpAndSettle();
+    expect(repo.markAllCalls, 1);
+    expect(find.text('Marcar todo leído'), findsNothing);
+    expect(find.text('No leídas (0)'), findsOneWidget);
+    await tester.tap(find.text('No leídas (0)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Estás al día'), findsOneWidget);
+    expect(find.text('No tienes notificaciones sin leer.'), findsOneWidget);
+    await shot2('CP-NOT-005');
+  });
+
+  testWidgets('CP-NOT-006', (tester) async {
+    final CountingNotificationsRepository repo =
+        CountingNotificationsRepository(<AppNotification>[
+          reporteNotif(),
+          campanaNotif(),
+          bienvenida(),
+        ]);
+    await open(tester, NotificationsScreen(repository: repo));
+    await tester.drag(find.text('¡Bienvenido a EcoCuajimalpa!'), const Offset(-900, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('¡Bienvenido a EcoCuajimalpa!'), findsNothing);
+    expect(find.text('Anteriores'), findsNothing);
+    expect(repo.deleted, <int>[4]);
+    expect(find.byType(SnackBar), findsNothing);
+    expect(find.text('Nueva campaña: Reforestación'), findsOneWidget);
+    await shot2('CP-NOT-006');
+  });
+
+  testWidgets('CP-NOT-007', (tester) async {
+    final CountingNotificationsRepository repo = CountingNotificationsRepository(
+      <AppNotification>[reporteNotif(), campanaNotif(), bienvenida()],
+      failDelete: true,
+    );
+    await open(tester, NotificationsScreen(repository: repo));
+    await tester.drag(find.text('¡Bienvenido a EcoCuajimalpa!'), const Offset(-900, 0));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+    expect(find.text('No se pudo borrar la notificación.'), findsOneWidget);
+    expect(tester.widget<SnackBar>(find.byType(SnackBar)).backgroundColor, Colors.red);
+    expect(find.text('¡Bienvenido a EcoCuajimalpa!'), findsOneWidget);
+    expect(find.text('Anteriores'), findsOneWidget);
+    await shot2('CP-NOT-007');
+  });
+
+  testWidgets('CP-NOT-008', (tester) async {
+    final CountingNotificationsRepository repo =
+        CountingNotificationsRepository(<AppNotification>[
+          consejoNotif(),
+          bienvenida(),
+        ]);
+    await open(tester, NotificationsScreen(repository: repo));
+    expect(find.text('No leídas (1)'), findsOneWidget);
+    expect(textWidget(tester, 'Consejo de la semana').style!.fontWeight, FontWeight.bold);
+    await tester.tap(find.text('Consejo de la semana'));
+    await tester.pumpAndSettle();
+    expect(repo.read, <int>[3]);
+    expect(find.text('No leídas (0)'), findsOneWidget);
+    expect(find.text('Marcar todo leído'), findsNothing);
+    expect(textWidget(tester, 'Consejo de la semana').style!.fontWeight, FontWeight.w600);
+    expect(tileColor(tester, 'Consejo de la semana'), Colors.white);
+    expect(find.byType(NotificationsScreen), findsOneWidget);
+    await shot2('CP-NOT-008');
+  });
+
+  testWidgets('CP-NOT-009', (tester) async {
+    await open(
+      tester,
+      NotificationsScreen(
+        repository: CountingNotificationsRepository(<AppNotification>[
+          reporteNotif(),
+          campanaNotif(read: true),
+          consejoNotif(),
+          bienvenida(),
+        ]),
+      ),
+    );
+    for (final String t in const <String>[
+      'Tu reporte ECO-2026-0001 está en proceso',
+      'Consejo de la semana',
+    ]) {
+      expect(tileColor(tester, t), const Color(0xFFF2FBF6), reason: t);
+      expect(textWidget(tester, t).style!.fontWeight, FontWeight.bold, reason: t);
+    }
+    for (final String t in const <String>[
+      'Nueva campaña: Reforestación',
+      '¡Bienvenido a EcoCuajimalpa!',
+    ]) {
+      expect(tileColor(tester, t), Colors.white, reason: t);
+      expect(textWidget(tester, t).style!.fontWeight, FontWeight.w600, reason: t);
+    }
+    await shot2('CP-NOT-009');
+  });
+
+  testWidgets('CP-NOT-010', (tester) async {
+    final CountingNotificationsRepository repo =
+        CountingNotificationsRepository(<AppNotification>[
+          reporteNotif(),
+          campanaNotif(),
+          bienvenida(),
+        ]);
+    await open(tester, NotificationsScreen(repository: repo));
+    final TestGesture gesture = await tester.startGesture(
+      tester.getCenter(find.text('Nueva campaña: Reforestación')),
+    );
+    await gesture.moveBy(const Offset(-40, 0));
+    await tester.pump();
+    await gesture.moveBy(const Offset(-160, 0));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byIcon(Icons.delete_outline_rounded), findsWidgets);
+    expect(find.text('Nueva campaña: Reforestación'), findsOneWidget);
+    await shot2('CP-NOT-010');
+    for (int i = 0; i < 20; i++) {
+      await gesture.moveBy(const Offset(10, 0));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    await tester.pump(const Duration(milliseconds: 300));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(repo.deleted, isEmpty);
+    expect(find.text('Nueva campaña: Reforestación'), findsOneWidget);
+  });
+
+  testWidgets('CP-NOT-011', (tester) async {
+    final CountingNotificationsRepository repo =
+        CountingNotificationsRepository(<AppNotification>[
+          campanaNotif(),
+          bienvenida(),
+        ]);
+    phone(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: TestShell(
+          tabs: <AppTab, Widget>{
+            AppTab.inicio: home(repo),
+            AppTab.campanas: CampaignsScreen(
+              repository: FakeCampaignsRepository(<Campaign>[
+                campaign(1, 'Reforestación'),
+              ]),
+            ),
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.notifications_none_rounded).first);
+    await tester.pumpAndSettle();
+    expect(find.byType(NotificationsScreen), findsOneWidget);
+    await tester.tap(find.text('Nueva campaña: Reforestación'));
+    await tester.pumpAndSettle();
+    expect(find.byType(NotificationsScreen), findsNothing);
+    expect(repo.read, <int>[2]);
+    expect(find.text('Campañas Activas'), findsOneWidget);
+    expect(find.text('Reforestación'), findsOneWidget);
+    await shot2('CP-NOT-011');
+  });
+
+  testWidgets('CP-NOT-012', (tester) async {
+    server = (request) => json(<dynamic>[]);
+    final CountingNotificationsRepository repo =
+        CountingNotificationsRepository(<AppNotification>[
+          reporteNotif(),
+          bienvenida(),
+        ]);
+    await open(tester, NotificationsScreen(repository: repo));
+    await tester.tap(find.text('Tu reporte ECO-2026-0001 está en proceso'));
+    await network(tester);
+    expect(repo.read, <int>[1]);
+    expect(find.byType(MyReportsScreen), findsOneWidget);
+    expect(find.text('Mis reportes'), findsOneWidget);
+    await shot2('CP-NOT-012');
+  });
+
+  testWidgets('CP-NOT-013', (tester) async {
+    await open(
+      tester,
+      NotificationsScreen(
+        repository: CountingNotificationsRepository(<AppNotification>[
+          reporteNotif(read: true),
+          consejoNotif(read: true),
+          bienvenida(),
+        ]),
+      ),
+    );
+    expect(find.text('Notificaciones'), findsOneWidget);
+    expect(find.text('Marcar todo leído'), findsNothing);
+    expect(find.byType(TextButton), findsNothing);
+    expect(find.text('No leídas (0)'), findsOneWidget);
+    await shot2('CP-NOT-013');
+  });
+
+  testWidgets('CP-NOT-014', (tester) async {
+    phone(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: theme,
+        home: home(CountingNotificationsRepository(<AppNotification>[])),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.notifications_none_rounded).first);
+    await tester.pumpAndSettle();
+    expect(find.text('No tienes notificaciones'), findsOneWidget);
+    expect(find.text('Aquí verás avisos de tus reportes y campañas.'), findsOneWidget);
+    expect(find.text('No leídas (0)'), findsOneWidget);
+    expect(find.text('Marcar todo leído'), findsNothing);
+    await shot2('CP-NOT-014');
+  });
+}
